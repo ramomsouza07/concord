@@ -443,6 +443,13 @@ class ConcordWebRTCMesh {
         } catch (_) {}
       }
       entry.cameraSenders = [];
+      this.sendStreamMeta(peerUserId);
+      this.gateway.send("WEBRTC_SIGNAL", {
+        targetUserId: peerUserId,
+        channelId: this.activeChannelId,
+        signalType: "track-stopped",
+        meta: { kind: "camera" }
+      });
       if (notifyServer) {
         await this.renegotiatePeer(peerUserId);
       }
@@ -563,6 +570,13 @@ class ConcordWebRTCMesh {
         } catch (_) {}
       }
       entry.screenSenders = [];
+      this.sendStreamMeta(peerUserId);
+      this.gateway.send("WEBRTC_SIGNAL", {
+        targetUserId: peerUserId,
+        channelId: this.activeChannelId,
+        signalType: "track-stopped",
+        meta: { kind: "screen" }
+      });
       if (notifyServer) {
         await this.renegotiatePeer(peerUserId);
       }
@@ -579,12 +593,21 @@ class ConcordWebRTCMesh {
   }
 
   sendStreamMeta(targetUserId) {
+    const micTrack = this.micStream && this.micStream.getAudioTracks()[0];
+    const camTrack = this.cameraStream && this.cameraStream.getVideoTracks()[0];
+    const screenVidTrack = this.screenStream && this.screenStream.getVideoTracks()[0];
+    const screenAudTrack = this.screenStream && this.screenStream.getAudioTracks()[0];
+
     const meta = {
-      micStreamId: this.micStream ? this.micStream.id : null,
-      cameraStreamId: this.cameraStream ? this.cameraStream.id : null,
-      screenStreamId: this.screenStream ? this.screenStream.id : null,
+      micTrackId: micTrack ? micTrack.id : null,
+      cameraTrackId: camTrack ? camTrack.id : null,
+      screenVideoTrackId: screenVidTrack ? screenVidTrack.id : null,
+      screenAudioTrackId: screenAudTrack ? screenAudTrack.id : null,
+      cameraActive: this.cameraEnabled,
+      screenActive: this.screenShareEnabled,
       screenQuality: this.screenQuality.label
     };
+
     this.gateway.send("WEBRTC_SIGNAL", {
       targetUserId,
       channelId: this.activeChannelId,
@@ -604,18 +627,26 @@ class ConcordWebRTCMesh {
       pc,
       makingOffer: false,
       ignoreOffer: false,
+      isSettingRemoteAnswerPending: false,
+      negotiationQueued: false,
       polite: String(this.myUserId) > String(peerUserId),
       micSender: null,
       cameraSenders: [],
       screenSenders: [],
       remoteStreams: new Map(), // streamId -> MediaStream
+      remoteTracks: new Map(), // trackId -> { track, stream, kind: 'camera'|'screen'|'audio', quality }
+      iceCandidateQueue: [],
       streamMeta: {
-        micStreamId: null,
-        cameraStreamId: null,
-        screenStreamId: null,
+        micTrackId: null,
+        cameraTrackId: null,
+        screenVideoTrackId: null,
+        screenAudioTrackId: null,
+        cameraActive: false,
+        screenActive: false,
         screenQuality: "1080p 60fps"
       },
-      audioEl: null,
+      audioElements: new Map(), // trackId -> HTMLAudioElement
+      audioSources: new Map(), // trackId -> MediaStreamAudioSourceNode
       gainNode: null,
       pannerNode: null
     };
@@ -655,16 +686,49 @@ class ConcordWebRTCMesh {
     };
 
     pc.ontrack = (e) => {
-      const stream = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
+      const track = e.track;
+      const stream = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([track]);
       entry.remoteStreams.set(stream.id, stream);
 
-      if (e.track.kind === "audio") {
-        this.setupRemotePeerAudio(peerUserId, stream);
-      }
+      if (track.kind === "video") {
+        let kind = "camera";
+        if (track.id === entry.streamMeta.screenVideoTrackId) {
+          kind = "screen";
+        } else if (track.id === entry.streamMeta.cameraTrackId) {
+          kind = "camera";
+        } else if (entry.streamMeta.screenActive && !entry.streamMeta.cameraActive) {
+          kind = "screen";
+        } else if (entry.streamMeta.cameraActive && !entry.streamMeta.screenActive) {
+          kind = "camera";
+        } else {
+          const hasCam = Array.from(entry.remoteTracks.values()).some((t) => t.kind === "camera");
+          kind = hasCam ? "screen" : "camera";
+        }
 
-      e.track.onended = () => {
-        this.notifyUI();
-      };
+        const tileStream = new MediaStream([track]);
+        entry.remoteTracks.set(track.id, {
+          track,
+          stream: tileStream,
+          kind,
+          quality: entry.streamMeta.screenQuality || "1080p 60fps"
+        });
+
+        track.onended = () => {
+          entry.remoteTracks.delete(track.id);
+          this.notifyUI();
+        };
+        track.onmute = () => {
+          this.notifyUI();
+        };
+        track.onunmute = () => {
+          this.notifyUI();
+        };
+      } else if (track.kind === "audio") {
+        this.setupRemotePeerAudio(peerUserId, stream);
+        track.onended = () => {
+          this.notifyUI();
+        };
+      }
 
       this.notifyUI();
     };
@@ -684,16 +748,27 @@ class ConcordWebRTCMesh {
 
   async renegotiatePeer(peerUserId) {
     const entry = this.peers.get(peerUserId);
-    if (!entry) return;
+    if (!entry || !entry.pc) return;
+    const pc = entry.pc;
+
+    if (entry.makingOffer || pc.signalingState !== "stable") {
+      entry.negotiationQueued = true;
+      return;
+    }
+
     try {
       entry.makingOffer = true;
-      const offer = await entry.pc.createOffer();
-      await entry.pc.setLocalDescription(offer);
+      const offer = await pc.createOffer();
+      if (pc.signalingState !== "stable") {
+        entry.negotiationQueued = true;
+        return;
+      }
+      await pc.setLocalDescription(offer);
       this.gateway.send("WEBRTC_SIGNAL", {
         targetUserId: peerUserId,
         channelId: this.activeChannelId,
         signalType: "offer",
-        sdp: entry.pc.localDescription
+        sdp: pc.localDescription
       });
     } catch (err) {
       console.warn("[WebRTC] Erro ao renegociar oferta:", err.message);
@@ -702,23 +777,78 @@ class ConcordWebRTCMesh {
     }
   }
 
+  async drainCandidateQueue(entry) {
+    if (!entry || !entry.pc || !entry.pc.remoteDescription) return;
+    const queue = entry.iceCandidateQueue.splice(0, entry.iceCandidateQueue.length);
+    for (const candidate of queue) {
+      try {
+        await entry.pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (_) {}
+    }
+  }
+
   async handleSignal({ fromUserId, signalType, sdp, candidate, meta }) {
     const entry = await this.ensurePeerConnection(fromUserId, false);
     const pc = entry.pc;
 
+    if (signalType === "track-stopped") {
+      const kind = meta && meta.kind;
+      if (kind === "screen") {
+        for (const [tId, tInfo] of entry.remoteTracks) {
+          if (tInfo.kind === "screen") {
+            entry.remoteTracks.delete(tId);
+          }
+        }
+        entry.streamMeta.screenActive = false;
+        entry.streamMeta.screenVideoTrackId = null;
+        entry.streamMeta.screenAudioTrackId = null;
+      } else if (kind === "camera") {
+        for (const [tId, tInfo] of entry.remoteTracks) {
+          if (tInfo.kind === "camera") {
+            entry.remoteTracks.delete(tId);
+          }
+        }
+        entry.streamMeta.cameraActive = false;
+        entry.streamMeta.cameraTrackId = null;
+      }
+      this.notifyUI();
+      return;
+    }
+
     if (signalType === "stream-meta" && meta) {
       entry.streamMeta = { ...entry.streamMeta, ...meta };
+      for (const [tId, tInfo] of entry.remoteTracks) {
+        if (tId === entry.streamMeta.screenVideoTrackId) {
+          tInfo.kind = "screen";
+          tInfo.quality = entry.streamMeta.screenQuality || "1080p 60fps";
+        } else if (tId === entry.streamMeta.cameraTrackId) {
+          tInfo.kind = "camera";
+        }
+      }
       this.notifyUI();
       return;
     }
 
     try {
       if (signalType === "offer" && sdp) {
-        const offerCollision = entry.makingOffer || pc.signalingState !== "stable";
+        const readyForOffer =
+          !entry.makingOffer &&
+          (pc.signalingState === "stable" || entry.isSettingRemoteAnswerPending);
+        const offerCollision = !readyForOffer;
         entry.ignoreOffer = !entry.polite && offerCollision;
-        if (entry.ignoreOffer) return;
+        if (entry.ignoreOffer) {
+          return;
+        }
+
+        if (offerCollision) {
+          try {
+            await pc.setLocalDescription({ type: "rollback" });
+          } catch (_) {}
+        }
 
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        await this.drainCandidateQueue(entry);
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         this.gateway.send("WEBRTC_SIGNAL", {
@@ -728,8 +858,22 @@ class ConcordWebRTCMesh {
           sdp: pc.localDescription
         });
       } else if (signalType === "answer" && sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        entry.isSettingRemoteAnswerPending = true;
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        } finally {
+          entry.isSettingRemoteAnswerPending = false;
+        }
+        await this.drainCandidateQueue(entry);
+        if (entry.negotiationQueued && pc.signalingState === "stable") {
+          entry.negotiationQueued = false;
+          await this.renegotiatePeer(fromUserId);
+        }
       } else if (signalType === "ice-candidate" && candidate) {
+        if (!pc.remoteDescription || !pc.remoteDescription.type) {
+          entry.iceCandidateQueue.push(candidate);
+          return;
+        }
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (err) {
@@ -748,44 +892,49 @@ class ConcordWebRTCMesh {
     const entry = this.peers.get(peerUserId);
     if (!entry) return;
 
-    // Elemento de áudio oculto (necessário no Chromium para ativar o fluxo WebRTC)
-    if (!entry.audioEl) {
+    if (!entry.audioElements) entry.audioElements = new Map();
+    if (!entry.audioSources) entry.audioSources = new Map();
+
+    const audioTracks = stream.getAudioTracks();
+    for (const track of audioTracks) {
+      if (entry.audioElements.has(track.id)) continue;
+
+      const singleTrackStream = new MediaStream([track]);
       const audioEl = document.createElement("audio");
       audioEl.autoplay = true;
       audioEl.playsInline = true;
       audioEl.muted = true; // Mutado no elemento pois o som sai pelo GainNode da Web Audio API
       document.body.appendChild(audioEl);
-      entry.audioEl = audioEl;
-    }
-    entry.audioEl.srcObject = stream;
-    entry.audioEl.play().catch(() => {});
+      audioEl.srcObject = singleTrackStream;
+      audioEl.play().catch(() => {});
+      entry.audioElements.set(track.id, audioEl);
 
-    const ctx = this.ensureAudioContext();
-    if (ctx) {
-      try {
-        const source = ctx.createMediaStreamSource(stream);
-        const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-        const gainNode = ctx.createGain();
+      const ctx = this.ensureAudioContext();
+      if (ctx) {
+        try {
+          if (!entry.gainNode) {
+            entry.gainNode = ctx.createGain();
+            entry.pannerNode = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+            if (entry.pannerNode) {
+              entry.gainNode.connect(entry.pannerNode);
+              entry.pannerNode.connect(ctx.destination);
+            } else {
+              entry.gainNode.connect(ctx.destination);
+            }
+          }
 
-        if (panner) {
-          source.connect(panner);
-          panner.connect(gainNode);
-        } else {
-          source.connect(gainNode);
+          const source = ctx.createMediaStreamSource(singleTrackStream);
+          source.connect(entry.gainNode);
+          entry.audioSources.set(track.id, source);
+          this.applyPeerAudioGain(peerUserId);
+        } catch (_) {
+          audioEl.muted = false;
+          this.applyPeerAudioGain(peerUserId);
         }
-        gainNode.connect(ctx.destination);
-
-        entry.gainNode = gainNode;
-        entry.pannerNode = panner;
-        this.applyPeerAudioGain(peerUserId);
-      } catch (err) {
-        // Fallback caso Web Audio falhe
-        entry.audioEl.muted = false;
+      } else {
+        audioEl.muted = false;
         this.applyPeerAudioGain(peerUserId);
       }
-    } else {
-      entry.audioEl.muted = false;
-      this.applyPeerAudioGain(peerUserId);
     }
   }
 
@@ -828,9 +977,14 @@ class ConcordWebRTCMesh {
 
     if (entry.gainNode) {
       entry.gainNode.gain.value = gainValue;
-    } else if (entry.audioEl) {
-      entry.audioEl.muted = isMuted;
-      entry.audioEl.volume = Math.min(1, gainValue);
+    }
+    if (entry.audioElements) {
+      for (const [, el] of entry.audioElements) {
+        if (!entry.gainNode) {
+          el.muted = isMuted;
+          el.volume = Math.min(1, gainValue);
+        }
+      }
     }
   }
 
@@ -840,9 +994,22 @@ class ConcordWebRTCMesh {
     try {
       entry.pc.close();
     } catch (_) {}
-    if (entry.audioEl && entry.audioEl.parentNode) {
-      entry.audioEl.srcObject = null;
-      entry.audioEl.parentNode.removeChild(entry.audioEl);
+    if (entry.audioElements) {
+      for (const [, el] of entry.audioElements) {
+        try {
+          el.srcObject = null;
+          if (el.parentNode) el.parentNode.removeChild(el);
+        } catch (_) {}
+      }
+      entry.audioElements.clear();
+    }
+    if (entry.audioSources) {
+      for (const [, src] of entry.audioSources) {
+        try {
+          src.disconnect();
+        } catch (_) {}
+      }
+      entry.audioSources.clear();
     }
     this.peers.delete(peerUserId);
   }
@@ -855,49 +1022,42 @@ class ConcordWebRTCMesh {
     const tiles = [];
 
     if (this.screenShareEnabled && this.screenStream) {
-      tiles.push({
-        id: `local_screen_${this.myUserId}`,
-        userId: this.myUserId,
-        type: "screen",
-        stream: this.screenStream,
-        isLocal: true,
-        quality: this.screenQuality.label
-      });
+      const liveTrack = this.screenStream.getVideoTracks().find((t) => t.readyState === "live");
+      if (liveTrack) {
+        tiles.push({
+          id: `local_screen_${this.myUserId}`,
+          userId: this.myUserId,
+          type: "screen",
+          stream: this.screenStream,
+          isLocal: true,
+          quality: this.screenQuality.label
+        });
+      }
     }
 
     if (this.cameraEnabled && this.cameraStream) {
-      tiles.push({
-        id: `local_cam_${this.myUserId}`,
-        userId: this.myUserId,
-        type: "camera",
-        stream: this.cameraStream,
-        isLocal: true
-      });
+      const liveTrack = this.cameraStream.getVideoTracks().find((t) => t.readyState === "live");
+      if (liveTrack) {
+        tiles.push({
+          id: `local_cam_${this.myUserId}`,
+          userId: this.myUserId,
+          type: "camera",
+          stream: this.cameraStream,
+          isLocal: true
+        });
+      }
     }
 
     for (const [peerUserId, entry] of this.peers) {
-      let videoIndex = 0;
-      for (const [streamId, stream] of entry.remoteStreams) {
-        const videoTracks = stream.getVideoTracks().filter((t) => t.readyState === "live");
-        if (videoTracks.length === 0) continue;
-
-        let tileType = "camera";
-        if (entry.streamMeta.screenStreamId === streamId) {
-          tileType = "screen";
-        } else if (entry.streamMeta.cameraStreamId === streamId) {
-          tileType = "camera";
-        } else if (videoIndex > 0) {
-          tileType = "screen";
-        }
-        videoIndex++;
-
+      for (const [trackId, info] of entry.remoteTracks) {
+        if (!info.track || info.track.readyState !== "live") continue;
         tiles.push({
-          id: `remote_${tileType}_${peerUserId}_${streamId}`,
+          id: `remote_${info.kind}_${peerUserId}_${trackId}`,
           userId: peerUserId,
-          type: tileType,
-          stream,
+          type: info.kind,
+          stream: info.stream,
           isLocal: false,
-          quality: entry.streamMeta.screenQuality || "1080p 60fps"
+          quality: info.quality || entry.streamMeta.screenQuality || "1080p 60fps"
         });
       }
     }

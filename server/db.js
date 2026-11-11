@@ -809,5 +809,7 @@ module.exports = {
   DATA_DIR,
   UPLOADS_DIR,
   DB_JSON_PATH,
-  generateId
+  generateId,
+  hashPassword,
+  verifyPassword
 };

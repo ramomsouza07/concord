@@ -1408,7 +1408,6 @@ class ConcordApp {
         : allStageCards[0] && allStageCards[0].id;
     }
 
-    gridEl.innerHTML = "";
     gridEl.classList.toggle("spotlight-mode", this.stageLayout === "spotlight");
 
     if (this.stageLayout === "spotlight" && allStageCards.length > 0) {
@@ -1416,22 +1415,78 @@ class ConcordApp {
         allStageCards.find((c) => c.id === this.spotlightTileId) || allStageCards[0];
       const secondaryCards = allStageCards.filter((c) => c.id !== primaryCard.id);
 
-      const primaryWrap = document.createElement("div");
-      primaryWrap.className = "spotlight-primary";
-      primaryWrap.appendChild(this.createStageTileDom(primaryCard));
-      gridEl.appendChild(primaryWrap);
+      let primaryWrap = gridEl.querySelector(".spotlight-primary");
+      if (!primaryWrap) {
+        gridEl.innerHTML = "";
+        primaryWrap = document.createElement("div");
+        primaryWrap.className = "spotlight-primary";
+        gridEl.appendChild(primaryWrap);
+      }
 
+      this.syncContainerTiles(primaryWrap, [primaryCard]);
+
+      let stripWrap = gridEl.querySelector(".spotlight-strip");
       if (secondaryCards.length > 0) {
-        const stripWrap = document.createElement("div");
-        stripWrap.className = "spotlight-strip";
-        for (const sc of secondaryCards) {
-          stripWrap.appendChild(this.createStageTileDom(sc));
+        if (!stripWrap) {
+          stripWrap = document.createElement("div");
+          stripWrap.className = "spotlight-strip";
+          gridEl.appendChild(stripWrap);
         }
-        gridEl.appendChild(stripWrap);
+        this.syncContainerTiles(stripWrap, secondaryCards);
+      } else if (stripWrap) {
+        stripWrap.remove();
       }
     } else {
-      for (const card of allStageCards) {
-        gridEl.appendChild(this.createStageTileDom(card));
+      // Modo grade normal
+      const pWrap = gridEl.querySelector(".spotlight-primary");
+      if (pWrap) {
+        gridEl.innerHTML = "";
+      }
+      this.syncContainerTiles(gridEl, allStageCards);
+    }
+  }
+
+  syncContainerTiles(container, cards) {
+    const desiredIds = new Set(cards.map((c) => c.id));
+
+    // Remove tiles obsoletos
+    for (const child of Array.from(container.children)) {
+      if (!desiredIds.has(child.dataset.tileId)) {
+        child.remove();
+      }
+    }
+
+    // Adiciona novos ou atualiza existentes sem reconstruir o elemento de vídeo
+    for (const card of cards) {
+      let tile = container.querySelector(`[data-tile-id="${card.id}"]`);
+      const user = this.users.get(card.userId) || { displayName: "Amigo" };
+      const vs = this.voiceStates.find((s) => s.userId === card.userId);
+      const isSpeaking = card.isLocal ? this.rtc.isSpeaking : vs && vs.speaking;
+
+      if (!tile) {
+        tile = this.createStageTileDom(card);
+        container.appendChild(tile);
+      } else {
+        // Atualiza apenas classes de animação e estados dinâmicos
+        tile.classList.toggle("speaking", !!isSpeaking);
+        const avatarBox = tile.querySelector(".stage-tile-avatar-placeholder");
+        if (avatarBox) {
+          avatarBox.classList.toggle("avatar-speaking-ring", !!isSpeaking);
+        }
+        const videoEl = tile.querySelector("video");
+        if (videoEl && card.stream && videoEl.srcObject !== card.stream) {
+          videoEl.srcObject = card.stream;
+          videoEl.play().catch(() => {});
+        }
+        const volLabel = tile.querySelector(".vol-label");
+        const slider = tile.querySelector(".tile-vol-slider");
+        if (volLabel && slider) {
+          const cur = this.rtc.getUserVolume(card.userId);
+          if (document.activeElement !== slider) {
+            slider.value = cur;
+            volLabel.textContent = `${cur}%`;
+          }
+        }
       }
     }
   }
@@ -1443,6 +1498,7 @@ class ConcordApp {
 
     const tile = document.createElement("div");
     tile.className = `stage-tile${isSpeaking ? " speaking" : ""}`;
+    tile.dataset.tileId = card.id;
 
     if (card.stream) {
       const videoEl = document.createElement("video");
@@ -1450,7 +1506,11 @@ class ConcordApp {
       videoEl.playsInline = true;
       videoEl.muted = true; // O áudio já é reproduzido e amplificado pela cadeia Web Audio API
       videoEl.srcObject = card.stream;
+      videoEl.onloadedmetadata = () => {
+        videoEl.play().catch(() => {});
+      };
       tile.appendChild(videoEl);
+      videoEl.play().catch(() => {});
     } else {
       const avatarBox = document.createElement("div");
       avatarBox.className = `stage-tile-avatar-placeholder${isSpeaking ? " avatar-speaking-ring" : ""}`;
@@ -1505,10 +1565,13 @@ class ConcordApp {
       </div>
     `;
 
-    // Impede que clique no slider troque o modo de foco
-    bottomOverlay.querySelector(".tile-quick-actions").addEventListener("click", (e) => {
-      e.stopPropagation();
-    });
+    // Impede que clique no slider ou botões troque o modo de foco
+    const qa = bottomOverlay.querySelector(".tile-quick-actions");
+    if (qa) {
+      qa.addEventListener("click", (e) => {
+        e.stopPropagation();
+      });
+    }
 
     const slider = bottomOverlay.querySelector(".tile-vol-slider");
     const volLabel = bottomOverlay.querySelector(".vol-label");

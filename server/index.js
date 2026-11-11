@@ -866,4 +866,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { server, db, PORT, requestHandler };
+module.exports = { server, db, PORT, requestHandler, handleWebSocketUpgrade };
