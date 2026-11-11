@@ -156,6 +156,9 @@ class ConcordGateway {
       opened = true;
       this.connected = true;
       this.emit("GATEWAY_STATUS", { connected: true, pingMs: this.pingMs });
+      if (this.token) {
+        this.send("IDENTIFY", { token: this.token });
+      }
       this.startHeartbeat();
     };
 

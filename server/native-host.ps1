@@ -449,6 +449,7 @@ namespace ConcordNativeServer
         private bool IsUserOnline(string userId)
         {
             if (userId == "usr_concord_bot") return true;
+            if (_voiceStates.ContainsKey(userId)) return true;
             foreach (var kv in _clients)
             {
                 if (kv.Value.UserId == userId && kv.Value.Connected) return true;

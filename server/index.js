@@ -123,9 +123,14 @@ function getAuthenticatedUser(req) {
 
 function isUserOnline(userId) {
   if (userId === "usr_concord_bot") return true;
+  // 1. Usuário em canal de voz está 100% online
+  if (voiceStates.has(userId)) return true;
+  if (db.state.realtime && db.state.realtime.voiceStates && db.state.realtime.voiceStates[userId]) return true;
+  // 2. Conexão WebSocket ativa
   for (const c of clients) {
-    if (c.userId === userId) return true;
+    if (c.userId === userId && c.socket && !c.socket.destroyed) return true;
   }
+  // 3. Heartbeat recente
   return db.isUserRecentlyActive(userId);
 }
 
@@ -280,8 +285,10 @@ function processRealtimeClientAction(userId, t, d, excludeWsClient = null) {
       voiceStates: getCombinedVoiceStates()
     };
     db.appendRealtimeEvent("VOICE_STATE_UPDATE", updatePayload);
+    db.appendRealtimeEvent("PRESENCE_UPDATE", { users: getPublicUsers() });
     db.save();
     wsBroadcast("VOICE_STATE_UPDATE", updatePayload);
+    wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
     return;
   }
 
@@ -300,8 +307,10 @@ function processRealtimeClientAction(userId, t, d, excludeWsClient = null) {
       voiceStates: getCombinedVoiceStates()
     };
     db.appendRealtimeEvent("VOICE_STATE_UPDATE", updatePayload);
+    db.appendRealtimeEvent("PRESENCE_UPDATE", { users: getPublicUsers() });
     db.save();
     wsBroadcast("VOICE_STATE_UPDATE", updatePayload);
+    wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
     return;
   }
 

@@ -405,9 +405,10 @@ class ConcordDatabase {
 
   isUserRecentlyActive(userId) {
     if (userId === "usr_concord_bot") return true;
+    if (this.state.realtime && this.state.realtime.voiceStates && this.state.realtime.voiceStates[userId]) return true;
     const last = this.state.realtime && this.state.realtime.heartbeats[userId];
     if (!last) return false;
-    return Date.now() - last < 30000;
+    return Date.now() - last < 45000;
   }
 
   sanitizeUser(user) {
@@ -417,8 +418,19 @@ class ConcordDatabase {
   }
 
   findUserByUsername(username) {
-    const normalized = String(username || "").trim().toLowerCase();
-    return this.state.users.find((u) => u.username.toLowerCase() === normalized) || null;
+    const raw = String(username || "").trim();
+    if (!raw) return null;
+    const normalized = raw.toLowerCase();
+    const cleanNormalized = normalized.replace(/\s+/g, "_").replace(/[^a-z0-9_.-]/g, "");
+
+    return (
+      this.state.users.find(
+        (u) =>
+          u.username.toLowerCase() === normalized ||
+          u.username.toLowerCase() === cleanNormalized ||
+          u.displayName.toLowerCase() === normalized
+      ) || null
+    );
   }
 
   findUserById(userId) {
@@ -438,19 +450,20 @@ class ConcordDatabase {
   }
 
   registerUser({ username, displayName, password, inviteCode, avatar }) {
-    const cleanUsername = String(username || "")
-      .trim()
+    const rawName = String(username || displayName || "").trim();
+    const cleanUsername = rawName
       .toLowerCase()
+      .replace(/\s+/g, "_")
       .replace(/[^a-z0-9_.-]/g, "");
 
     if (cleanUsername.length < 2 || cleanUsername.length > 32) {
-      throw new Error("O nome de usuário deve ter entre 2 e 32 caracteres (letras, números, _, . ou -).");
+      throw new Error("O nome de usuário deve ter entre 2 e 32 caracteres.");
     }
     if (!password || String(password).length < 4) {
       throw new Error("A senha deve ter pelo menos 4 caracteres.");
     }
 
-    const invite = this.validateInviteCode(inviteCode);
+    const invite = this.validateInviteCode(inviteCode || "CONCORD-AMIGOS-2026");
     if (!invite) {
       throw new Error("Código de convite inválido ou expirado. Peça o código ao administrador do grupo.");
     }
@@ -466,10 +479,13 @@ class ConcordDatabase {
     const palette = ["#5865F2", "#57F287", "#FEE75C", "#EB459E", "#ED4245", "#00B0F4", "#9B59B6"];
     const bannerColor = palette[realUsersCount % palette.length];
 
+    // O nome de exibição é igual ao nome de usuário
+    const finalDisplayName = String(displayName || rawName || cleanUsername).trim();
+
     const newUser = {
       id: generateId("usr"),
       username: cleanUsername,
-      displayName: String(displayName || username).trim() || cleanUsername,
+      displayName: finalDisplayName,
       discriminator: discrim,
       passwordHash: hashPassword(password),
       avatar: avatar || "",

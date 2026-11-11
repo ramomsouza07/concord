@@ -26,7 +26,7 @@ class ConcordApp {
     this.activeServerId = "srv_qg_amigos";
     this.activeChannelId = "chn_geral";
     this.activeDmChannelId = null;
-    this.friendsTab = "online";
+    this.friendsTab = "all"; // 'all' | 'online'
     this.showOnlyPinned = false;
 
     // Estado do Chat
@@ -63,40 +63,82 @@ class ConcordApp {
       serverInput.value = this.gateway.serverUrl;
     }
 
+    const savedUserRaw = localStorage.getItem("concord_saved_user");
+    const cachedSessionRaw = localStorage.getItem("concord_user_session");
+    let cachedSession = null;
+    if (cachedSessionRaw) {
+      try {
+        cachedSession = JSON.parse(cachedSessionRaw);
+      } catch (_) {}
+    }
+
+    // 1. Se temos sessão salva em cache, entra DIRETO no workspace sem esperar rede ou tela de login!
+    if (cachedSession && cachedSession.me) {
+      this.applyBootstrap(cachedSession);
+      this.showWorkspace();
+    }
+
+    // 2. Se temos token, tenta validar com o servidor em background
     if (this.gateway.token) {
       try {
         const data = await this.gateway.request("/api/bootstrap");
         this.applyBootstrap(data);
         this.showWorkspace();
         this.gateway.connect();
+        return;
       } catch (err) {
-        const isAuthError =
-          err &&
-          (err.message.includes("401") ||
-            err.message.includes("Sessão expirada") ||
-            err.message.includes("não autenticada"));
-        if (isAuthError) {
-          this.gateway.setToken("");
-          localStorage.removeItem("concord_user_session");
-          this.showAuthScreen();
-        } else {
-          // Mantém a sessão ativa e tenta restaurar os dados em cache enquanto reconecta
-          const cached = localStorage.getItem("concord_user_session");
-          if (cached) {
-            try {
-              const parsed = JSON.parse(cached);
-              this.applyBootstrap(parsed);
-              this.showWorkspace();
-            } catch (_) {
-              this.showAuthScreen();
+        // Se o token expirou ou é inválido, tenta auto-login silencioso com credenciais salvas
+        if (savedUserRaw) {
+          try {
+            const creds = JSON.parse(savedUserRaw);
+            if (creds && creds.username && creds.password) {
+              const loginRes = await this.gateway.request("/api/auth/login", {
+                method: "POST",
+                body: creds
+              });
+              if (loginRes && loginRes.token) {
+                this.gateway.setToken(loginRes.token);
+                const freshData = await this.gateway.request("/api/bootstrap");
+                this.applyBootstrap(freshData);
+                this.showWorkspace();
+                this.gateway.connect();
+                return;
+              }
             }
-          } else {
-            this.showAuthScreen();
-          }
-          this.gateway.connect();
+          } catch (_) {}
         }
+
+        // Se tínhamos cache válido, mantém o usuário conectado exibindo tentativa de reconexão
+        if (cachedSession && cachedSession.me) {
+          this.gateway.connect();
+          return;
+        }
+
+        this.showAuthScreen();
       }
-    } else {
+    } else if (savedUserRaw) {
+      // 3. Sem token mas com credenciais salvas -> auto-login silencioso instantâneo
+      try {
+        const creds = JSON.parse(savedUserRaw);
+        if (creds && creds.username && creds.password) {
+          const loginRes = await this.gateway.request("/api/auth/login", {
+            method: "POST",
+            body: creds
+          });
+          if (loginRes && loginRes.token) {
+            this.gateway.setToken(loginRes.token);
+            const freshData = await this.gateway.request("/api/bootstrap");
+            this.applyBootstrap(freshData);
+            this.showWorkspace();
+            this.gateway.connect();
+            return;
+          }
+        }
+      } catch (_) {}
+      if (!cachedSession || !cachedSession.me) {
+        this.showAuthScreen();
+      }
+    } else if (!cachedSession || !cachedSession.me) {
       this.showAuthScreen();
     }
   }
@@ -192,10 +234,12 @@ class ConcordApp {
       const serverUrlInput = document.getElementById("auth-server-url");
       this.gateway.setServerUrl(serverUrlInput.value);
 
-      const username = document.getElementById("auth-username").value.trim();
+      const name = document.getElementById("auth-username").value.trim();
       const password = document.getElementById("auth-password").value;
-      const displayName = document.getElementById("auth-displayname").value.trim();
-      const inviteCode = document.getElementById("auth-invite-code").value.trim();
+      const inviteCodeInput = document.getElementById("auth-invite-code");
+      const inviteCode = (inviteCodeInput && inviteCodeInput.value.trim()) || "CONCORD-AMIGOS-2026";
+      const rememberCheckbox = document.getElementById("auth-remember-me");
+      const shouldRemember = rememberCheckbox ? rememberCheckbox.checked : true;
 
       const submitBtn = document.getElementById("auth-submit-btn");
       submitBtn.disabled = true;
@@ -205,10 +249,18 @@ class ConcordApp {
           this.authMode === "register" ? "/api/auth/register" : "/api/auth/login";
         const result = await this.gateway.request(endpoint, {
           method: "POST",
-          body: { username, password, displayName, inviteCode }
+          body: { username: name, displayName: name, password, inviteCode }
         });
 
         this.gateway.setToken(result.token);
+
+        if (shouldRemember) {
+          localStorage.setItem(
+            "concord_saved_user",
+            JSON.stringify({ username: name, password })
+          );
+        }
+
         const bootstrap = await this.gateway.request("/api/bootstrap");
         this.applyBootstrap(bootstrap);
         this.showWorkspace();
@@ -255,6 +307,16 @@ class ConcordApp {
   showAuthScreen() {
     document.getElementById("auth-screen").classList.remove("hidden");
     document.getElementById("app-workspace").classList.add("hidden");
+    const savedUserRaw = localStorage.getItem("concord_saved_user");
+    if (savedUserRaw) {
+      try {
+        const creds = JSON.parse(savedUserRaw);
+        const nameInput = document.getElementById("auth-username");
+        if (nameInput && creds.username) {
+          nameInput.value = creds.username;
+        }
+      } catch (_) {}
+    }
   }
 
   showWorkspace() {
@@ -394,9 +456,21 @@ class ConcordApp {
 
     this.gateway.on("VOICE_STATE_UPDATE", ({ voiceStates }) => {
       this.voiceStates = voiceStates || [];
+      if (Array.isArray(voiceStates)) {
+        for (const vs of voiceStates) {
+          const u = this.users.get(vs.userId);
+          if (u) {
+            u.online = true;
+            u.effectiveStatus = "online";
+          }
+        }
+      }
       this.renderChannelsSidebar();
       this.renderVoiceStage();
       this.renderMembersSidebar();
+      if (this.viewMode === "home") {
+        this.renderFriendsView();
+      }
     });
 
     this.gateway.on("SERVER_CREATE", ({ server }) => {
@@ -814,12 +888,18 @@ class ConcordApp {
     if (!container) return;
     container.innerHTML = "";
 
+    const isUserOnline = (u) => {
+      if (u.id === "usr_concord_bot") return true;
+      if (this.voiceStates && this.voiceStates.some((s) => s.userId === u.id)) return true;
+      return !!u.online;
+    };
+
     const humanUsers = Array.from(this.users.values()).filter(
       (u) => !u.isSystem && u.id !== (this.me && this.me.id)
     );
     const filtered =
       this.friendsTab === "online"
-        ? humanUsers.filter((u) => u.online)
+        ? humanUsers.filter((u) => isUserOnline(u))
         : humanUsers;
 
     if (filtered.length === 0) {
@@ -838,17 +918,24 @@ class ConcordApp {
     }
 
     for (const u of filtered) {
+      const inVoice = this.voiceStates && this.voiceStates.some((s) => s.userId === u.id);
+      const online = isUserOnline(u);
+      const statusClass = online ? (u.status || "online") : "offline";
+      const statusLabel = inVoice
+        ? "🔊 Em canal de voz"
+        : (u.customStatus || (online ? "Online" : "Offline"));
+
       const item = document.createElement("div");
       item.className = "friend-item";
       item.innerHTML = `
         <div style="display:flex;align-items:center;gap:12px;">
           <div class="avatar-wrapper" style="width:40px;height:40px;">
-            ${this.renderAvatarHtml(u)}
-            <span class="status-dot ${u.effectiveStatus || "offline"}"></span>
+            ${this.renderAvatarHtml({ ...u, effectiveStatus: statusClass })}
+            <span class="status-dot ${statusClass}"></span>
           </div>
           <div>
             <div style="font-weight:700;color:var(--text-Header);">${this.escapeHtml(u.displayName)} <span style="font-size:12px;color:var(--text-muted);">@${this.escapeHtml(u.username)}</span></div>
-            <div style="font-size:12.5px;color:var(--text-muted);">${this.escapeHtml(u.customStatus || (u.online ? "Online" : "Offline"))}</div>
+            <div style="font-size:12.5px;color:var(--text-muted);">${this.escapeHtml(statusLabel)}</div>
           </div>
         </div>
         <div style="display:flex;gap:8px;">
@@ -1720,9 +1807,15 @@ class ConcordApp {
     if (!container) return;
     container.innerHTML = "";
 
+    const isUserActuallyOnline = (u) => {
+      if (u.id === "usr_concord_bot") return true;
+      if (this.voiceStates && this.voiceStates.some((s) => s.userId === u.id)) return true;
+      return !!u.online;
+    };
+
     const allUsers = Array.from(this.users.values());
-    const onlineUsers = allUsers.filter((u) => u.online);
-    const offlineUsers = allUsers.filter((u) => !u.online);
+    const onlineUsers = allUsers.filter((u) => isUserActuallyOnline(u));
+    const offlineUsers = allUsers.filter((u) => !isUserActuallyOnline(u));
 
     const renderGroup = (title, list, isOffline) => {
       if (list.length === 0) return;
@@ -1732,13 +1825,17 @@ class ConcordApp {
       container.appendChild(header);
 
       for (const u of list) {
-        const vs = this.voiceStates.find((s) => s.userId === u.id);
+        const vs = this.voiceStates && this.voiceStates.find((s) => s.userId === u.id);
+        const inVoice = !!vs;
+        const online = isUserActuallyOnline(u);
+        const statusClass = online ? (u.status || "online") : "offline";
+
         const row = document.createElement("div");
-        row.className = `member-row${isOffline ? " offline" : ""}`;
+        row.className = `member-row${!online ? " offline" : ""}`;
         row.innerHTML = `
           <div class="avatar-wrapper">
-            ${this.renderAvatarHtml(u)}
-            <span class="status-dot ${u.effectiveStatus || "offline"}"></span>
+            ${this.renderAvatarHtml({ ...u, effectiveStatus: statusClass })}
+            <span class="status-dot ${statusClass}"></span>
           </div>
           <div style="min-width:0;flex:1;">
             <div style="display:flex;align-items:center;gap:5px;">
@@ -1749,7 +1846,7 @@ class ConcordApp {
               ${vs && vs.screenShare ? `<span class="badge-live">AO VIVO</span>` : ""}
             </div>
             <div style="font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-              ${this.escapeHtml(u.customStatus || (vs ? "🔊 Em canal de voz" : ""))}
+              ${this.escapeHtml(u.customStatus || (inVoice ? "🔊 Em canal de voz" : (online ? "Disponível" : "Offline")))}
             </div>
           </div>
         `;
@@ -1948,6 +2045,9 @@ class ConcordApp {
       await this.rtc.leaveVoiceChannel(false);
       this.gateway.disconnect();
       this.gateway.setToken("");
+      localStorage.removeItem("concord_token");
+      localStorage.removeItem("concord_saved_user");
+      localStorage.removeItem("concord_user_session");
       document.getElementById("modal-settings").classList.add("hidden");
       this.showAuthScreen();
     });
