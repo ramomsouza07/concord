@@ -267,8 +267,28 @@ class ConcordDatabase {
             events: []
           };
         }
+        // Purga estados de voz, heartbeats e filas em tempo real de sessões anteriores
+        this.state.realtime.voiceStates = {};
+        this.state.realtime.heartbeats = {};
+        this.state.realtime.signalQueues = {};
+        this.state.realtime.events = [];
         if (!this.state.meta.eventSeq) {
           this.state.meta.eventSeq = 1;
+        }
+
+        // Remove canais duplicados criados por suítes de teste anteriores
+        for (const srv of this.state.servers || []) {
+          if (Array.isArray(srv.channels)) {
+            const seen = new Set();
+            srv.channels = srv.channels.filter((c) => {
+              const key = `${c.type}:${c.name}`;
+              if (seen.has(key) && c.name === "Transmissões 4K") {
+                return false;
+              }
+              seen.add(key);
+              return true;
+            });
+          }
         }
       } catch (err) {
         this.state = createInitialState();
@@ -312,11 +332,19 @@ class ConcordDatabase {
 
   save() {
     try {
-      const tmpPath = `${DB_JSON_PATH}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(this.state, null, 2), "utf8");
-      fs.renameSync(tmpPath, DB_JSON_PATH);
+      fs.writeFileSync(DB_JSON_PATH, JSON.stringify(this.state, null, 2), "utf8");
       this.syncToSqlite();
-    } catch (_) {}
+    } catch (_) {
+      try {
+        const tmpPath = `${DB_JSON_PATH}.${Date.now()}.tmp`;
+        fs.writeFileSync(tmpPath, JSON.stringify(this.state, null, 2), "utf8");
+        if (fs.existsSync(DB_JSON_PATH)) {
+          try { fs.unlinkSync(DB_JSON_PATH); } catch (e) {}
+        }
+        fs.renameSync(tmpPath, DB_JSON_PATH);
+        this.syncToSqlite();
+      } catch (_) {}
+    }
   }
 
   appendRealtimeEvent(type, data) {
@@ -507,8 +535,58 @@ class ConcordDatabase {
     return { user: this.sanitizeUser(user), token };
   }
 
+  getSecretKey() {
+    return (
+      process.env.CONCORD_SECRET ||
+      (this.state && this.state.meta && this.state.meta.createdAt) ||
+      "concord-secret-amigos-2026"
+    );
+  }
+
+  signToken(payload) {
+    const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const hmac = crypto.createHmac("sha256", this.getSecretKey());
+    hmac.update(`${header}.${body}`);
+    const signature = hmac.digest("base64url");
+    return `${header}.${body}.${signature}`;
+  }
+
+  verifyToken(token) {
+    if (!token || typeof token !== "string") return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const [header, body, signature] = parts;
+    try {
+      const hmac = crypto.createHmac("sha256", this.getSecretKey());
+      hmac.update(`${header}.${body}`);
+      const expectedSig = hmac.digest("base64url");
+      if (signature.length !== expectedSig.length) return null;
+      if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) return null;
+      const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+      return payload;
+    } catch (_) {
+      return null;
+    }
+  }
+
   createSession(userId) {
-    const token = crypto.randomBytes(32).toString("hex");
+    const user = this.findUserById(userId);
+    let token;
+    if (user) {
+      token = this.signToken({
+        id: user.id,
+        u: user.username,
+        d: user.displayName,
+        disc: user.discriminator,
+        col: user.bannerColor,
+        adm: !!user.isAdmin,
+        iat: Date.now()
+      });
+    } else {
+      token = crypto.randomBytes(32).toString("hex");
+    }
+    if (!this.state.sessions) this.state.sessions = {};
     this.state.sessions[token] = {
       userId,
       createdAt: new Date().toISOString()
@@ -519,9 +597,57 @@ class ConcordDatabase {
   getUserByToken(token) {
     if (!token) return null;
     const clean = String(token).replace(/^Bearer\s+/i, "").trim();
-    const session = this.state.sessions[clean];
-    if (!session) return null;
-    return this.findUserById(session.userId);
+    if (!clean) return null;
+
+    // 1. Tenta recuperar sessão existente em memória
+    const session = this.state.sessions && this.state.sessions[clean];
+    if (session) {
+      const u = this.findUserById(session.userId);
+      if (u) return u;
+    }
+
+    // 2. Se a sessão não está em memória (ex: reinício do servidor ou Lambda Serverless Vercel), valida o token assinado
+    const payload = this.verifyToken(clean);
+    if (!payload || !payload.id) return null;
+
+    // 3. Procura o usuário pelo ID
+    let user = this.findUserById(payload.id);
+    if (!user && payload.u) {
+      // Re-hidrata o usuário na memória do container caso tenha sido criado em outro nó serverless
+      user = {
+        id: payload.id,
+        username: payload.u,
+        displayName: payload.d || payload.u,
+        discriminator: payload.disc || "1000",
+        passwordHash: "",
+        avatar: "",
+        bannerColor: payload.col || "#5865F2",
+        status: "online",
+        customStatus: "",
+        bio: "Membro do Concord",
+        isAdmin: !!payload.adm,
+        isSystem: false,
+        createdAt: new Date(payload.iat || Date.now()).toISOString()
+      };
+      this.state.users.push(user);
+      for (const srv of this.state.servers) {
+        if (!srv.memberIds.includes(user.id)) {
+          srv.memberIds.push(user.id);
+        }
+      }
+      this.save();
+    }
+
+    if (user) {
+      if (!this.state.sessions) this.state.sessions = {};
+      this.state.sessions[clean] = {
+        userId: user.id,
+        createdAt: new Date().toISOString()
+      };
+      return user;
+    }
+
+    return null;
   }
 
   updateUserProfile(userId, updates) {

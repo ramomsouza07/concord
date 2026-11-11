@@ -85,6 +85,10 @@ test("3. Servidores, Categorias e Canais de Voz/Texto", async (t) => {
 
   assert.ok(newChannel.id.startsWith("chn_"));
   assert.equal(newChannel.type, "voice");
+
+  // Limpa o canal de teste para não poluir a base de dados
+  srv.channels = srv.channels.filter((c) => c.id !== newChannel.id);
+  db.save();
 });
 
 test("4. Chat Rico: Envio, Reações, Pin e Exclusão", async (t) => {
@@ -282,4 +286,32 @@ test("7. Endpoints HTTP REST: Health, Auth, Bootstrap e Upload", async (t) => {
     if (server.closeAllConnections) server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("8. Persistência de Conta com Tokens Assinados e Re-hidratação Stateless", async (t) => {
+  const dbA = new ConcordDatabase();
+  const testUser = `stateless_${Date.now()}`;
+  const reg = dbA.registerUser({
+    username: testUser,
+    password: "securePassword2026",
+    displayName: "Amigo Stateless",
+    inviteCode: "CONCORD-AMIGOS-2026"
+  });
+
+  assert.ok(reg.token, "Deve gerar token");
+  assert.equal(reg.token.split(".").length, 3, "Token deve ter formato JWT assinado (3 partes)");
+
+  // Simula um container cold start / nova instância sem o cache em memória de sessions
+  const dbB = new ConcordDatabase();
+  dbB.state.sessions = {}; // Zera o cache de sessões em memória
+
+  // O getUserByToken deve validar a assinatura criptográfica e reidratar o usuário mesmo sem o cache
+  const rehydrated = dbB.getUserByToken(reg.token);
+  assert.ok(rehydrated, "Usuário deve ser reconhecido através da assinatura criptográfica do token");
+  assert.equal(rehydrated.username, testUser);
+  assert.equal(rehydrated.id, reg.user.id);
+
+  // Token forjado ou adulterado deve ser rejeitado imediatamente
+  const forgedToken = reg.token.slice(0, -6) + "000000";
+  assert.equal(dbB.getUserByToken(forgedToken), null, "Token com assinatura violada deve ser rejeitado");
 });

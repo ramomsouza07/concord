@@ -69,9 +69,32 @@ class ConcordApp {
         this.applyBootstrap(data);
         this.showWorkspace();
         this.gateway.connect();
-      } catch (_) {
-        this.gateway.setToken("");
-        this.showAuthScreen();
+      } catch (err) {
+        const isAuthError =
+          err &&
+          (err.message.includes("401") ||
+            err.message.includes("Sessão expirada") ||
+            err.message.includes("não autenticada"));
+        if (isAuthError) {
+          this.gateway.setToken("");
+          localStorage.removeItem("concord_user_session");
+          this.showAuthScreen();
+        } else {
+          // Mantém a sessão ativa e tenta restaurar os dados em cache enquanto reconecta
+          const cached = localStorage.getItem("concord_user_session");
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              this.applyBootstrap(parsed);
+              this.showWorkspace();
+            } catch (_) {
+              this.showAuthScreen();
+            }
+          } else {
+            this.showAuthScreen();
+          }
+          this.gateway.connect();
+        }
       }
     } else {
       this.showAuthScreen();
@@ -246,6 +269,9 @@ class ConcordApp {
   // ==========================================================================
   applyBootstrap(data) {
     if (!data) return;
+    try {
+      localStorage.setItem("concord_user_session", JSON.stringify(data));
+    } catch (_) {}
     this.me = data.me;
     this.users.clear();
     for (const u of data.users || []) {
@@ -294,6 +320,7 @@ class ConcordApp {
     this.gateway.on("READY", (payload) => {
       this.applyBootstrap(payload);
       this.renderAll();
+      this.loadActiveChannelMessages();
     });
 
     this.gateway.on("PRESENCE_UPDATE", ({ users }) => {
@@ -600,7 +627,82 @@ class ConcordApp {
     titleEl.textContent = srv.name;
     addBtn.classList.remove("hidden");
 
-    for (const cat of srv.categories) {
+    const renderChannelRow = (ch, container) => {
+      const isText = ch.type === "text";
+      const isActive = isText
+        ? this.activeChannelId === ch.id
+        : this.rtc.activeChannelId === ch.id || this.activeChannelId === ch.id;
+
+      const row = document.createElement("div");
+      row.className = `channel-row${isActive ? " active" : ""}`;
+      row.innerHTML = `
+        <div class="channel-row-left">
+          <span class="channel-symbol">${isText ? "#" : "🔊"}</span>
+          <span class="channel-name">${this.escapeHtml(ch.name)}</span>
+        </div>
+      `;
+
+      row.addEventListener("click", () => {
+        this.activeChannelId = ch.id;
+        this.showOnlyPinned = false;
+        this.renderAll();
+        this.loadActiveChannelMessages();
+        if (!isText && this.rtc.activeChannelId !== ch.id) {
+          this.joinVoiceChannel(srv.id, ch.id);
+        }
+      });
+
+      container.appendChild(row);
+
+      // Se for canal de voz, lista abaixo dele todos os amigos conectados em tempo real
+      if (!isText) {
+        const connectedInVoice = this.voiceStates.filter((vs) => vs.channelId === ch.id);
+        if (connectedInVoice.length > 0) {
+          const membersWrap = document.createElement("div");
+          membersWrap.className = "voice-channel-members";
+
+          for (const vs of connectedInVoice) {
+            const u = this.users.get(vs.userId) || { displayName: "Amigo" };
+            const mItem = document.createElement("div");
+            mItem.className = "voice-member-item";
+            const isSpeaking =
+              vs.userId === (this.me && this.me.id) ? this.rtc.isSpeaking : vs.speaking;
+
+            mItem.innerHTML = `
+              <div class="voice-member-left">
+                <div class="voice-member-avatar${isSpeaking ? " speaking" : ""}">
+                  ${this.renderAvatarInner(u)}
+                </div>
+                <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                  ${this.escapeHtml(u.displayName)}
+                </span>
+              </div>
+              <div class="voice-member-badges">
+                ${vs.screenShare ? `<span class="badge-live">AO VIVO</span>` : ""}
+                ${vs.video ? `<span title="Câmera Ligada">📷</span>` : ""}
+                ${vs.muted ? `<span title="Microfone Mutado" style="color:var(--status-red);">🔇</span>` : ""}
+                ${vs.deafened ? `<span title="Áudio Desativado" style="color:var(--status-red);">🙉</span>` : ""}
+              </div>
+            `;
+
+            mItem.addEventListener("click", (e) => {
+              e.stopPropagation();
+              this.activeChannelId = ch.id;
+              this.renderAll();
+              if (this.rtc.activeChannelId !== ch.id) {
+                this.joinVoiceChannel(srv.id, ch.id);
+              }
+            });
+
+            membersWrap.appendChild(mItem);
+          }
+          container.appendChild(membersWrap);
+        }
+      }
+    };
+
+    const renderedChannelIds = new Set();
+    for (const cat of srv.categories || []) {
       const block = document.createElement("div");
       block.className = "category-block";
 
@@ -611,78 +713,30 @@ class ConcordApp {
       `;
       block.appendChild(catHeader);
 
-      const catChannels = srv.channels.filter((c) => c.categoryId === cat.id);
+      const catChannels = (srv.channels || []).filter((c) => c.categoryId === cat.id);
       for (const ch of catChannels) {
-        const isText = ch.type === "text";
-        const isActive = isText
-          ? this.activeChannelId === ch.id
-          : this.rtc.activeChannelId === ch.id;
+        renderedChannelIds.add(ch.id);
+        renderChannelRow(ch, block);
+      }
 
-        const row = document.createElement("div");
-        row.className = `channel-row${isActive ? " active" : ""}`;
-        row.innerHTML = `
-          <div class="channel-row-left">
-            <span class="channel-symbol">${isText ? "#" : "🔊"}</span>
-            <span class="channel-name">${this.escapeHtml(ch.name)}</span>
-          </div>
-        `;
+      scrollEl.appendChild(block);
+    }
 
-        row.addEventListener("click", () => {
-          if (isText) {
-            this.activeChannelId = ch.id;
-            this.showOnlyPinned = false;
-            this.renderAll();
-            this.loadActiveChannelMessages();
-          } else {
-            this.joinVoiceChannel(srv.id, ch.id);
-          }
-        });
+    // Renderiza canais sem categoria associada (evita canais invisíveis)
+    const uncategorized = (srv.channels || []).filter((c) => !renderedChannelIds.has(c.id));
+    if (uncategorized.length > 0) {
+      const block = document.createElement("div");
+      block.className = "category-block";
 
-        block.appendChild(row);
+      const catHeader = document.createElement("div");
+      catHeader.className = "category-header";
+      catHeader.innerHTML = `
+        <span>▾ OUTROS CANAIS</span>
+      `;
+      block.appendChild(catHeader);
 
-        // Se for canal de voz, lista abaixo dele todos os amigos conectados em tempo real
-        if (!isText) {
-          const connectedInVoice = this.voiceStates.filter((vs) => vs.channelId === ch.id);
-          if (connectedInVoice.length > 0) {
-            const membersWrap = document.createElement("div");
-            membersWrap.className = "voice-channel-members";
-
-            for (const vs of connectedInVoice) {
-              const u = this.users.get(vs.userId) || { displayName: "Amigo" };
-              const mItem = document.createElement("div");
-              mItem.className = "voice-member-item";
-              const isSpeaking =
-                vs.userId === (this.me && this.me.id) ? this.rtc.isSpeaking : vs.speaking;
-
-              mItem.innerHTML = `
-                <div class="voice-member-left">
-                  <div class="voice-member-avatar${isSpeaking ? " speaking" : ""}">
-                    ${this.renderAvatarInner(u)}
-                  </div>
-                  <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                    ${this.escapeHtml(u.displayName)}
-                  </span>
-                </div>
-                <div class="voice-member-badges">
-                  ${vs.screenShare ? `<span class="badge-live">AO VIVO</span>` : ""}
-                  ${vs.video ? `<span title="Câmera Ligada">📷</span>` : ""}
-                  ${vs.muted ? `<span title="Microfone Mutado" style="color:var(--status-red);">🔇</span>` : ""}
-                  ${vs.deafened ? `<span title="Áudio Desativado" style="color:var(--status-red);">🙉</span>` : ""}
-                </div>
-              `;
-
-              mItem.addEventListener("click", (e) => {
-                e.stopPropagation();
-                if (this.rtc.activeChannelId !== ch.id) {
-                  this.joinVoiceChannel(srv.id, ch.id);
-                }
-              });
-
-              membersWrap.appendChild(mItem);
-            }
-            block.appendChild(membersWrap);
-          }
-        }
+      for (const ch of uncategorized) {
+        renderChannelRow(ch, block);
       }
 
       scrollEl.appendChild(block);
@@ -744,10 +798,13 @@ class ConcordApp {
     const channel =
       srv && srv.channels.find((c) => c.id === this.activeChannelId);
     if (channel) {
-      symbolEl.textContent = "#";
+      const isVoice = channel.type === "voice";
+      symbolEl.textContent = isVoice ? "🔊" : "#";
       titleEl.textContent = channel.name;
-      topicEl.textContent = channel.topic || "";
-      chatInput.placeholder = `Conversar em #${channel.name} (Markdown, ||spoiler|| ou cole imagens com Ctrl+V)`;
+      topicEl.textContent =
+        channel.topic ||
+        (isVoice ? "Canal de Voz, Vídeo e Compartilhamento de Tela P2P" : "");
+      chatInput.placeholder = `Conversar em ${isVoice ? "🔊" : "#"}${channel.name} (Markdown, ||spoiler|| ou cole imagens com Ctrl+V)`;
     }
     this.renderMessages();
   }
@@ -1253,11 +1310,23 @@ class ConcordApp {
     });
 
     document.getElementById("btn-voice-disconnect-side").addEventListener("click", () => {
+      if (this.me) {
+        this.voiceStates = this.voiceStates.filter((vs) => vs.userId !== this.me.id);
+      }
       this.rtc.leaveVoiceChannel(true);
+      this.renderChannelsSidebar();
+      this.renderVoiceConnectionPanel();
+      this.renderVoiceStage();
     });
 
     document.getElementById("dock-btn-leave").addEventListener("click", () => {
+      if (this.me) {
+        this.voiceStates = this.voiceStates.filter((vs) => vs.userId !== this.me.id);
+      }
       this.rtc.leaveVoiceChannel(true);
+      this.renderChannelsSidebar();
+      this.renderVoiceConnectionPanel();
+      this.renderVoiceStage();
     });
 
     // Alternância de Layout do Palco: Grade vs. Palco/Foco (Spotlight)
@@ -1283,9 +1352,32 @@ class ConcordApp {
 
   async joinVoiceChannel(serverId, channelId) {
     if (!this.me) return;
+    this.activeChannelId = channelId;
+
+    // Atualiza imediatamente o estado de voz local para feedback instantâneo na UI
+    const existingIdx = this.voiceStates.findIndex((vs) => vs.userId === this.me.id);
+    const myState = {
+      userId: this.me.id,
+      channelId,
+      serverId,
+      muted: this.rtc.selfMuted,
+      deafened: this.rtc.selfDeafened,
+      video: this.rtc.cameraEnabled,
+      speaking: false
+    };
+    if (existingIdx !== -1) {
+      this.voiceStates[existingIdx] = myState;
+    } else {
+      this.voiceStates.push(myState);
+    }
+
+    this.renderAll();
+    this.loadActiveChannelMessages();
+
     await this.rtc.joinVoiceChannel(serverId, channelId, this.me.id, this.voiceStates);
     this.renderVoiceConnectionPanel();
     this.renderVoiceStage();
+    this.renderChannelsSidebar();
   }
 
   handleToggleMute() {

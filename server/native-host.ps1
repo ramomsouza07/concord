@@ -974,6 +974,64 @@ namespace ConcordNativeServer
 
                     if (req.Method == "POST" && path == "/api/sync")
                     {
+                        string bodyStr = req.Body.Length > 0 ? Encoding.UTF8.GetString(req.Body) : "";
+                        var body = !string.IsNullOrEmpty(bodyStr) ? _json.Deserialize<Dictionary<string, object>>(bodyStr) : new Dictionary<string, object>();
+                        var outbox = body.ContainsKey("outbox") && body["outbox"] is ArrayList ? body["outbox"] as ArrayList : new ArrayList();
+
+                        foreach (var item in outbox)
+                        {
+                            var itMap = item as Dictionary<string, object>;
+                            if (itMap == null || !itMap.ContainsKey("t")) continue;
+                            string itT = Convert.ToString(itMap["t"]);
+                            var itD = itMap.ContainsKey("d") && itMap["d"] is Dictionary<string, object> ? itMap["d"] as Dictionary<string, object> : new Dictionary<string, object>();
+
+                            if (itT == "VOICE_JOIN" && itD != null)
+                            {
+                                var state = new Dictionary<string, object>
+                                {
+                                    { "userId", myId },
+                                    { "serverId", itD.ContainsKey("serverId") ? itD["serverId"] : "srv_qg_amigos" },
+                                    { "channelId", itD.ContainsKey("channelId") ? itD["channelId"] : "" },
+                                    { "muted", itD.ContainsKey("muted") && Convert.ToBoolean(itD["muted"]) },
+                                    { "deafened", itD.ContainsKey("deafened") && Convert.ToBoolean(itD["deafened"]) },
+                                    { "video", itD.ContainsKey("video") && Convert.ToBoolean(itD["video"]) },
+                                    { "screenShare", false },
+                                    { "speaking", false },
+                                    { "joinedAt", DateTime.UtcNow.ToString("o") }
+                                };
+                                _voiceStates[myId] = state;
+                                var vListA = new ArrayList();
+                                foreach (var kv in _voiceStates) vListA.Add(kv.Value);
+                                await WsBroadcast("VOICE_STATE_UPDATE", new Dictionary<string, object> { { "action", "join" }, { "userId", myId }, { "voiceStates", vListA } });
+                            }
+                            else if (itT == "VOICE_LEAVE")
+                            {
+                                Dictionary<string, object> removed;
+                                _voiceStates.TryRemove(myId, out removed);
+                                var vListA = new ArrayList();
+                                foreach (var kv in _voiceStates) vListA.Add(kv.Value);
+                                await WsBroadcast("VOICE_STATE_UPDATE", new Dictionary<string, object> { { "action", "leave" }, { "userId", myId }, { "voiceStates", vListA } });
+                            }
+                            else if (itT == "VOICE_UPDATE" && itD != null)
+                            {
+                                Dictionary<string, object> current;
+                                if (_voiceStates.TryGetValue(myId, out current))
+                                {
+                                    foreach (var k in itD.Keys) current[k] = itD[k];
+                                    var vListA = new ArrayList();
+                                    foreach (var kv in _voiceStates) vListA.Add(kv.Value);
+                                    await WsBroadcast("VOICE_STATE_UPDATE", new Dictionary<string, object> { { "action", "update" }, { "userId", myId }, { "voiceStates", vListA } });
+                                }
+                            }
+                            else if (itT == "WEBRTC_SIGNAL" && itD != null && itD.ContainsKey("targetUserId"))
+                            {
+                                string targetId = Convert.ToString(itD["targetUserId"]);
+                                var payloadObj = new Dictionary<string, object>(itD);
+                                payloadObj["fromUserId"] = myId;
+                                await WsSendToUser(targetId, "WEBRTC_SIGNAL", payloadObj);
+                            }
+                        }
+
                         var vList = new ArrayList();
                         foreach (var kv in _voiceStates) vList.Add(kv.Value);
                         SendJson(outStream, 200, new Dictionary<string, object>

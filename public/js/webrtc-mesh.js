@@ -67,6 +67,16 @@ class ConcordWebRTCMesh {
 
     this.bindGatewayEvents();
     this.bindPttKeyboard();
+    this.bindAutoplayUnlock();
+  }
+
+  bindAutoplayUnlock() {
+    const unlock = () => {
+      this.ensureAudioContext();
+    };
+    window.addEventListener("click", unlock, { passive: true });
+    window.addEventListener("keydown", unlock, { passive: true });
+    window.addEventListener("touchstart", unlock, { passive: true });
   }
 
   loadUserVolumes() {
@@ -90,9 +100,20 @@ class ConcordWebRTCMesh {
       if (AudioCtx) this.audioCtx = new AudioCtx();
     }
     if (this.audioCtx && this.audioCtx.state === "suspended") {
-      this.audioCtx.resume().catch(() => {});
+      this.audioCtx
+        .resume()
+        .then(() => {
+          this.applyAudioRouting();
+        })
+        .catch(() => {});
     }
     return this.audioCtx;
+  }
+
+  applyAudioRouting() {
+    for (const [peerUserId] of this.peers) {
+      this.applyPeerAudioGain(peerUserId);
+    }
   }
 
   bindGatewayEvents() {
@@ -210,12 +231,13 @@ class ConcordWebRTCMesh {
       });
     }
 
-    // Inicia conexão P2P com quem já está na call
+    // Inicia conexão P2P com quem já está na call usando desempate determinístico (evita colisão de oferta)
     const peersInChannel = currentVoiceStates.filter(
       (s) => s.channelId === channelId && s.userId !== myUserId
     );
     for (const p of peersInChannel) {
-      await this.ensurePeerConnection(p.userId, true);
+      const shouldInitiate = String(myUserId) < String(p.userId);
+      await this.ensurePeerConnection(p.userId, shouldInitiate);
     }
 
     this.notifyUI();
@@ -887,6 +909,7 @@ class ConcordWebRTCMesh {
 
   /**
    * Configura cadeia de áudio com Web Audio API para permitir ganho de 0% a 200% e Pan L/R
+   * com fallback transparente e proteção contra o bug de autoplay/mute do Chromium.
    */
   setupRemotePeerAudio(peerUserId, stream) {
     const entry = this.peers.get(peerUserId);
@@ -903,7 +926,12 @@ class ConcordWebRTCMesh {
       const audioEl = document.createElement("audio");
       audioEl.autoplay = true;
       audioEl.playsInline = true;
-      audioEl.muted = true; // Mutado no elemento pois o som sai pelo GainNode da Web Audio API
+
+      const isCtxRunning = !!(this.audioCtx && this.audioCtx.state === "running");
+      const userGain = this.getUserVolume(peerUserId) / 100;
+      audioEl.muted = false;
+      audioEl.volume = isCtxRunning ? 0.0001 : Math.min(1, userGain);
+
       document.body.appendChild(audioEl);
       audioEl.srcObject = singleTrackStream;
       audioEl.play().catch(() => {});
@@ -929,10 +957,12 @@ class ConcordWebRTCMesh {
           this.applyPeerAudioGain(peerUserId);
         } catch (_) {
           audioEl.muted = false;
+          audioEl.volume = Math.min(1, userGain);
           this.applyPeerAudioGain(peerUserId);
         }
       } else {
         audioEl.muted = false;
+        audioEl.volume = Math.min(1, userGain);
         this.applyPeerAudioGain(peerUserId);
       }
     }
@@ -978,11 +1008,17 @@ class ConcordWebRTCMesh {
     if (entry.gainNode) {
       entry.gainNode.gain.value = gainValue;
     }
+
+    const isCtxRunning = !!(this.audioCtx && this.audioCtx.state === "running");
     if (entry.audioElements) {
       for (const [, el] of entry.audioElements) {
-        if (!entry.gainNode) {
-          el.muted = isMuted;
-          el.volume = Math.min(1, gainValue);
+        el.muted = isMuted;
+        if (isMuted) {
+          el.volume = 0;
+        } else if (isCtxRunning && entry.gainNode) {
+          el.volume = 0.0001; // Inaudível pelo elemento HTML, amplificado com alta fidelidade pelo GainNode
+        } else {
+          el.volume = Math.min(1, gainValue); // Fallback direto audível quando o AudioContext ainda não foi destravado por gesto
         }
       }
     }
