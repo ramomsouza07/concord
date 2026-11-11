@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Concord — Voz, Vídeo e Tela P2P</title>
+  <link rel="icon" type="image/png" href="/assets/logo-concord.png" />
+  <link rel="stylesheet" href="/css/concord.css" />
+</head>
+<body>
+  <!-- ====================================================================
+       1. BARRA DE TÍTULO NATIVA (Frameless Discord Style)
+       ==================================================================== -->
+  <header class="app-titlebar">
+    <div class="titlebar-brand">
+      <img src="/assets/logo-concord.png" alt="Concord" style="width:16px;height:16px;border-radius:4px;" />
+      <img class="wordmark" src="/assets/concord.png" alt="Concord" />
+      <span id="gateway-ping-pill" class="titlebar-ping-pill" title="Latência com o Gateway Concord">
+        ● <span id="gateway-ping-text">14 ms</span>
+      </span>
+    </div>
+    <div class="titlebar-controls">
+      <button id="btn-copy-master-invite" class="titlebar-btn" style="width:auto;padding:0 10px;font-size:11.5px;gap:5px;" title="Copiar Código de Convite do Grupo">
+        🔑 <span id="master-invite-label">CONCORD-AMIGOS-2026</span>
+      </button>
+      <button id="win-minimize" class="titlebar-btn" title="Minimizar">─</button>
+      <button id="win-maximize" class="titlebar-btn" title="Maximizar">▢</button>
+      <button id="win-close" class="titlebar-btn close" title="Fechar">✕</button>
+    </div>
+  </header>
+
+  <!-- ====================================================================
+       2. TELA DE AUTENTICAÇÃO (LOGIN + CADASTRO C/ CONVITE + SERVIDOR URL)
+       ==================================================================== -->
+  <section id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-form-col">
+        <div class="auth-header">
+          <h2 id="auth-title">Boas-vindas de volta!</h2>
+          <p id="auth-subtitle">Que bom ver você novamente no Concord!</p>
+        </div>
+
+        <div id="auth-error-box" class="auth-error hidden"></div>
+
+        <!-- URL do Servidor Configurável -->
+        <div class="form-group">
+          <label class="form-label">Servidor Concord (Local, Tailscale, Radmin ou VPS)</label>
+          <div class="server-url-row">
+            <input id="auth-server-url" type="text" class="form-input" placeholder="http://localhost:3456" />
+            <button id="btn-test-server" type="button" class="btn-secondary" title="Testar conexão com o servidor">
+              Testar
+            </button>
+          </div>
+        </div>
+
+        <form id="auth-form">
+          <div class="form-group">
+            <label class="form-label">Nome de Usuário</label>
+            <input id="auth-username" type="text" class="form-input" placeholder="ex: ramom" required autocomplete="username" />
+          </div>
+
+          <div id="register-fields" class="hidden">
+            <div class="form-group">
+              <label class="form-label">Nome de Exibição (Apelido)</label>
+              <input id="auth-displayname" type="text" class="form-input" placeholder="Como seus amigos te chamam" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Código de Convite Privado do Grupo</label>
+              <input id="auth-invite-code" type="text" class="form-input" value="CONCORD-AMIGOS-2026" placeholder="CONCORD-AMIGOS-2026" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Senha</label>
+            <input id="auth-password" type="password" class="form-input" placeholder="••••••••" required autocomplete="current-password" />
+          </div>
+
+          <button id="auth-submit-btn" type="submit" class="btn-primary" style="margin-top:8px;">
+            Entrar no Concord
+          </button>
+        </form>
+
+        <div class="auth-switch">
+          <span id="auth-switch-label">Precisa de uma conta para entrar no grupo?</span>
+          <button id="auth-toggle-mode" type="button">Criar conta com Convite</button>
+        </div>
+      </div>
+
+      <div class="auth-brand-col">
+        <img class="auth-lockup" src="/assets/splash-lockup.jpg" alt="Concord Logo" />
+        <h3>Concord Privado</h3>
+        <p>Voz cristalina, câmeras e múltiplas transmissões de tela em <strong>1080p/1440p a 60 FPS</strong> com áudio do sistema via WebRTC P2P Mesh.</p>
+        <div class="auth-feature-badges">
+          <span class="auth-badge">🖥️ Tela 1080p 60fps</span>
+          <span class="auth-badge">🔊 Volume 0–200%</span>
+          <span class="auth-badge">📦 Uploads 100 MB</span>
+          <span class="auth-badge">⌨️ Push-to-Talk</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       3. WORKSPACE PRINCIPAL DE 4 COLUNAS DO CONCORD
+       ==================================================================== -->
+  <main id="app-workspace" class="app-workspace hidden">
+    <!-- COLUNA 1: Barra de Servidores -->
+    <nav class="servers-rail">
+      <div id="rail-home-item" class="server-item active" title="Mensagens Diretas e Amigos">
+        <span class="server-pill"></span>
+        <button id="btn-home-dms" class="server-icon-btn">
+          <img src="/assets/logo-concord.png" alt="Home" />
+        </button>
+      </div>
+
+      <div class="rail-separator"></div>
+
+      <div id="servers-list" style="display:flex;flex-direction:column;gap:8px;align-items:center;"></div>
+
+      <div class="server-item" title="Criar ou Entrar em um Servidor">
+        <button id="btn-open-server-modal" class="server-icon-btn action-btn">+</button>
+      </div>
+    </nav>
+
+    <!-- COLUNA 2: Barra de Canais ou DMs + Status de Voz + Barra do Usuário -->
+    <aside class="channels-sidebar">
+      <div id="sidebar-header" class="sidebar-header">
+        <span id="sidebar-title">QG dos Amigos</span>
+        <button id="btn-add-channel-top" class="icon-btn" title="Criar Canal ou Convidar">+</button>
+      </div>
+
+      <div id="channels-scroll" class="channels-scroll"></div>
+
+      <!-- Painel de Voz Conectada (visível quando em chamada) -->
+      <div id="voice-connection-panel" class="voice-connection-panel hidden">
+        <div class="voice-conn-top">
+          <div class="voice-conn-status">
+            <div class="voice-conn-title">
+              <span>📶 Voz Conectada</span>
+              <span id="voice-ping-badge" style="font-size:11px;opacity:0.85;">14 ms</span>
+            </div>
+            <div id="voice-conn-channel-name" class="voice-conn-sub">Call Geral / QG dos Amigos</div>
+          </div>
+          <button id="btn-voice-disconnect-side" class="icon-btn danger-active" title="Desconectar da Call">
+            📞
+          </button>
+        </div>
+        <div class="voice-conn-actions">
+          <button id="btn-side-camera" class="voice-action-pill" title="Ligar/Desligar Câmera">
+            📷 Vídeo
+          </button>
+          <button id="btn-side-screenshare" class="voice-action-pill" title="Compartilhar Tela (1080p 60fps)">
+            🖥️ Tela
+          </button>
+        </div>
+      </div>
+
+      <!-- Painel do Usuário (Rodapé 53px) -->
+      <div class="user-panel">
+        <div id="user-panel-profile" class="user-panel-profile" title="Clique para alterar Status ou Perfil">
+          <div class="avatar-wrapper">
+            <div id="me-avatar" class="avatar-circle">R</div>
+            <span id="me-status-dot" class="status-dot online"></span>
+          </div>
+          <div class="user-panel-names">
+            <div id="me-display-name" class="user-panel-display">Usuário</div>
+            <div id="me-sub-status" class="user-panel-sub">Online</div>
+          </div>
+        </div>
+        <div class="user-panel-buttons">
+          <button id="btn-self-mute" class="icon-btn" title="Mutar Microfone (Ctrl+Shift+M)">🎙️</button>
+          <button id="btn-self-deafen" class="icon-btn" title="Desativar Áudio (Ctrl+Shift+D)">🎧</button>
+          <button id="btn-open-settings" class="icon-btn" title="Configurações do Concord">⚙️</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- COLUNA 3: Palco de Mídia WebRTC + Chat de Texto / Amigos -->
+    <section class="main-content">
+      <header class="main-header">
+        <div class="main-header-left">
+          <span id="main-channel-symbol" class="channel-symbol">#</span>
+          <span id="main-channel-title" class="main-header-title">geral</span>
+          <span id="main-channel-topic" class="main-header-topic">Bate-papo geral da galera</span>
+        </div>
+        <div class="main-header-actions">
+          <button id="btn-header-join-voice" class="btn-secondary" style="height:30px;font-size:12.5px;">
+            🔊 Entrar na Call
+          </button>
+          <button id="btn-header-pinned" class="icon-btn" title="Ver Mensagens Fixadas">📌</button>
+          <button id="btn-toggle-members" class="icon-btn" title="Mostrar/Ocultar Lista de Membros">👥</button>
+        </div>
+      </header>
+
+      <!-- PALCO DE VOZ, VÍDEO E COMPARTILHAMENTO DE TELA (WebRTC P2P Mesh) -->
+      <div id="voice-stage" class="voice-stage hidden">
+        <div class="stage-topbar">
+          <div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;">
+            <span>🔊 <span id="stage-channel-label">Call Geral</span></span>
+            <span id="stage-quality-badge" class="auth-badge">P2P Mesh • 1080p 60fps</span>
+          </div>
+          <div class="stage-layout-controls">
+            <button id="btn-layout-grid" class="stage-pill-btn active" title="Visualizar todos em Grade">
+              ⊞ Grade
+            </button>
+            <button id="btn-layout-spotlight" class="stage-pill-btn" title="Focar na Transmissão Principal">
+              ▣ Palco / Foco
+            </button>
+            <button id="btn-stage-expand" class="stage-pill-btn" title="Expandir/Reduzir Palco sob o Chat">
+              ↕ Expandir
+            </button>
+          </div>
+        </div>
+
+        <div id="stage-grid" class="stage-grid"></div>
+
+        <div class="stage-bottom-dock">
+          <button id="dock-btn-mute" class="dock-btn">🎙️ Microfone</button>
+          <button id="dock-btn-deafen" class="dock-btn">🎧 Áudio</button>
+          <button id="dock-btn-camera" class="dock-btn">📷 Câmera</button>
+          <button id="dock-btn-screen" class="dock-btn">🖥️ Compartilhar Tela</button>
+          <button id="dock-btn-leave" class="dock-btn danger">📞 Desconectar</button>
+        </div>
+      </div>
+
+      <!-- PAINEL DE AMIGOS (Quando na aba Home sem DM selecionada) -->
+      <div id="friends-view" class="friends-view hidden">
+        <div class="friends-tabs">
+          <span style="font-weight:700;color:var(--text-Header);margin-right:8px;">👋 Amigos</span>
+          <button class="friend-tab-btn active" data-tab="online">Online</button>
+          <button class="friend-tab-btn" data-tab="all">Todos do Grupo</button>
+          <button id="btn-tab-add-friend" class="friend-tab-btn add-btn">Adicionar Amigo</button>
+        </div>
+
+        <div id="add-friend-panel" class="hidden" style="background:var(--bg-secondary);padding:16px;border-radius:8px;margin-bottom:16px;">
+          <h4 style="color:var(--text-Header);margin-bottom:6px;">Adicionar Amigo pelo Nome de Usuário</h4>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">
+            Todos que entram com o código de convite do grupo já são conectados automaticamente, mas você também pode adicionar pelo username:
+          </p>
+          <div style="display:flex;gap:8px;">
+            <input id="input-add-friend" type="text" class="form-input" placeholder="Digite o username do amigo..." />
+            <button id="btn-send-friend-req" class="btn-primary" style="width:160px;height:40px;">Adicionar</button>
+          </div>
+        </div>
+
+        <div id="friends-list-container"></div>
+      </div>
+
+      <!-- ÁREA DE CHAT DE TEXTO -->
+      <div id="chat-area" class="chat-area">
+        <div id="messages-scroll" class="messages-scroll"></div>
+
+        <div class="chat-composer-wrap">
+          <div id="reply-banner" class="reply-banner hidden">
+            <span>Respondendo a <strong id="reply-target-author">usuário</strong></span>
+            <button id="btn-cancel-reply" style="color:var(--status-red);font-weight:700;">✕ Cancelar</button>
+          </div>
+
+          <div id="attachment-queue-banner" class="attachment-queue-banner hidden">
+            <span id="attachment-queue-text">📎 1 arquivo pronto para envio</span>
+            <button id="btn-clear-attachments" style="color:var(--status-red);font-weight:700;">✕ Limpar</button>
+          </div>
+
+          <form id="chat-form" class="chat-composer">
+            <input id="file-upload-input" type="file" multiple class="hidden" />
+            <button id="btn-upload-file" type="button" class="composer-upload-btn" title="Enviar Arquivo, Imagem ou Vídeo (até 100 MB)">
+              +
+            </button>
+            <input id="chat-input" type="text" class="composer-input" placeholder="Conversar em #geral (suporta Markdown, ||spoiler|| e Ctrl+V de imagens)" autocomplete="off" />
+            <button id="btn-quick-emoji" type="button" class="icon-btn" title="Inserir Emoji Rápido">😀</button>
+          </form>
+          <div id="typing-indicator" class="typing-indicator"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COLUNA 4: Lista de Membros do Servidor + Controle de Volume Individual -->
+    <aside id="members-sidebar" class="members-sidebar">
+      <div id="members-list-container"></div>
+    </aside>
+  </main>
+
+  <!-- ====================================================================
+       4. MODAL: COMPARTILHAR TELA ("GO LIVE" 720p/1080p/1440p 30/60 FPS)
+       ==================================================================== -->
+  <div id="modal-screenshare" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🖥️ Compartilhar Tela (Go Live)</h3>
+        <button class="icon-btn" data-close-modal="modal-screenshare">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="electron-sources-section" class="hidden">
+          <label class="form-label">Escolha a Tela ou Janela do Jogo/Aplicativo</label>
+          <div id="electron-sources-grid" class="sources-grid"></div>
+        </div>
+
+        <label class="form-label">Resolução da Transmissão (Destravado)</label>
+        <div id="screen-res-selector" class="quality-selector-grid">
+          <div class="quality-pill" data-width="1280" data-height="720" data-label="720p">720p HD</div>
+          <div class="quality-pill selected" data-width="1920" data-height="1080" data-label="1080p">1080p FHD</div>
+          <div class="quality-pill" data-width="2560" data-height="1440" data-label="1440p">1440p QHD</div>
+          <div class="quality-pill" data-width="3840" data-height="2160" data-label="4K">Nativo / 4K</div>
+        </div>
+
+        <label class="form-label">Taxa de Quadros (Fluidez)</label>
+        <div id="screen-fps-selector" class="quality-selector-grid" style="grid-template-columns:1fr 1fr;">
+          <div class="quality-pill" data-fps="30">30 FPS (Padrão)</div>
+          <div class="quality-pill selected" data-fps="60">60 FPS (Gameplay Fluido)</div>
+        </div>
+
+        <label style="display:flex;align-items:center;gap:10px;margin-top:8px;cursor:pointer;font-size:14px;">
+          <input id="screen-include-audio" type="checkbox" checked style="width:18px;height:18px;accent-color:var(--brand-500);" />
+          <span><strong>Compartilhar Áudio do Sistema / Jogo</strong> (Loopback Estéreo)</span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close-modal="modal-screenshare">Cancelar</button>
+        <button id="btn-confirm-screenshare" class="btn-primary" style="width:auto;padding:0 22px;">
+          🔴 Transmitir Agora
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       5. MODAL: CRIAR OU ENTRAR EM SERVIDOR
+       ==================================================================== -->
+  <div id="modal-server" class="modal-backdrop hidden">
+    <div class="modal-card" style="max-width:460px;">
+      <div class="modal-header">
+        <h3>Criar ou Entrar em um Servidor</h3>
+        <button class="icon-btn" data-close-modal="modal-server">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Criar Novo Servidor para os Amigos</label>
+          <div style="display:flex;gap:8px;">
+            <input id="input-new-server-name" type="text" class="form-input" placeholder="Ex: Campeonato Valorant" />
+            <button id="btn-create-server" class="btn-primary" style="width:130px;height:40px;">Criar</button>
+          </div>
+        </div>
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:18px 0;" />
+        <div class="form-group">
+          <label class="form-label">Ou Entrar com Código de Convite</label>
+          <div style="display:flex;gap:8px;">
+            <input id="input-join-server-code" type="text" class="form-input" placeholder="Ex: QG-AMIGOS" />
+            <button id="btn-join-server" class="btn-secondary" style="height:40px;">Entrar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       6. MODAL: CRIAR NOVO CANAL (TEXTO OU VOZ/TELA)
+       ==================================================================== -->
+  <div id="modal-channel" class="modal-backdrop hidden">
+    <div class="modal-card" style="max-width:440px;">
+      <div class="modal-header">
+        <h3>Criar Canal</h3>
+        <button class="icon-btn" data-close-modal="modal-channel">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Tipo de Canal</label>
+          <select id="select-channel-type" class="form-input">
+            <option value="text"># Canal de Texto (Mensagens, Imagens, Arquivos)</option>
+            <option value="voice">🔊 Canal de Voz, Vídeo e Tela (WebRTC P2P)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Nome do Canal</label>
+          <input id="input-channel-name" type="text" class="form-input" placeholder="ex: clipes-da-noite ou Call 2" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tópico / Descrição (Opcional)</label>
+          <input id="input-channel-topic" type="text" class="form-input" placeholder="Assunto do canal" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close-modal="modal-channel">Cancelar</button>
+        <button id="btn-confirm-create-channel" class="btn-primary" style="width:auto;padding:0 20px;">
+          Criar Canal
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       7. MODAL: CONFIGURAÇÕES DO CONCORD (PERFIL, VOZ/VÍDEO, PTT, REDE)
+       ==================================================================== -->
+  <div id="modal-settings" class="modal-backdrop hidden">
+    <div class="modal-card" style="max-width:620px;">
+      <div class="modal-header">
+        <h3>⚙️ Configurações do Concord</h3>
+        <button class="icon-btn" data-close-modal="modal-settings">✕</button>
+      </div>
+      <div class="modal-body">
+        <h4 style="color:var(--text-Header);margin-bottom:10px;">👤 Meu Perfil & Status de Presença</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+          <div class="form-group">
+            <label class="form-label">Nome de Exibição</label>
+            <input id="set-display-name" type="text" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Status de Presença</label>
+            <select id="set-status" class="form-input">
+              <option value="online">🟢 Online</option>
+              <option value="idle">🌙 Ausente</option>
+              <option value="dnd">⛔ Não Perturbe</option>
+              <option value="offline">⚫ Invisível</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Status Personalizado (Frase abaixo do nome)</label>
+          <input id="set-custom-status" type="text" class="form-input" placeholder="Jogando com os amigos no Concord ✈️" />
+        </div>
+
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:16px 0;" />
+
+        <h4 style="color:var(--text-Header);margin-bottom:10px;">🎙️ Voz, Vídeo & Push-to-Talk</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+          <div class="form-group">
+            <label class="form-label">Dispositivo de Entrada (Microfone)</label>
+            <select id="set-audio-input" class="form-input">
+              <option value="default">Padrão do Sistema</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Câmera (Vídeo)</label>
+            <select id="set-video-input" class="form-input">
+              <option value="default">Padrão do Sistema</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+          <div class="form-group">
+            <label class="form-label">Modo de Ativação de Voz</label>
+            <select id="set-input-mode" class="form-input">
+              <option value="vad">Detecção de Voz Automática (Anel Verde)</option>
+              <option value="ptt">Pressionar para Falar (Push-to-Talk)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tecla Push-to-Talk</label>
+            <select id="set-ptt-key" class="form-input">
+              <option value="Space">Barra de Espaço (Space)</option>
+              <option value="CapsLock">Caps Lock</option>
+              <option value="ControlLeft">Ctrl Esquerdo</option>
+              <option value="AltLeft">Alt Esquerdo</option>
+              <option value="KeyV">Tecla V</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Sensibilidade do Microfone (Limiar VAD: <span id="vad-val-label">12</span>)</label>
+          <input id="set-vad-threshold" type="range" min="3" max="45" value="12" style="width:100%;accent-color:var(--status-green);" />
+        </div>
+
+        <p style="font-size:12px;color:var(--text-muted);margin-top:6px;">
+          ⌨️ <strong>Atalhos Globais Desktop:</strong> <code>Ctrl+Shift+M</code> (Mutar Microfone) • <code>Ctrl+Shift+D</code> (Desativar Áudio)
+        </p>
+      </div>
+      <div class="modal-footer" style="justify-content:space-between;">
+        <button id="btn-logout" class="btn-danger">Sair da Conta</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-secondary" data-close-modal="modal-settings">Fechar</button>
+          <button id="btn-save-settings" class="btn-primary" style="width:auto;padding:0 20px;">
+            Salvar Alterações
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lightbox para visualizar imagens enviadas em tamanho real -->
+  <div id="image-lightbox" class="modal-backdrop hidden" style="cursor:zoom-out;">
+    <img id="lightbox-img" src="" alt="Visualização" style="max-width:92vw;max-height:90vh;border-radius:8px;box-shadow:var(--elevation-high);" />
+  </div>
+
+  <script src="/js/sound-engine.js"></script>
+  <script src="/js/gateway.js"></script>
+  <script src="/js/webrtc-mesh.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

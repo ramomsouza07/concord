@@ -1,0 +1,13 @@
+services:
+  concord:
+    build: .
+    container_name: concord-server
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    environment:
+      - PORT=3456
+      - HOST=0.0.0.0
+      - CONCORD_INVITE_CODE=CONCORD-AMIGOS-2026
+    volumes:
+      - ./data:/app/data

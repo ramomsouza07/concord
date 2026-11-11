@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+electron
+*.bat
+cloudflared.exe
+Dockerfile
+docker-compose.yml
+render.yaml
+railway.json

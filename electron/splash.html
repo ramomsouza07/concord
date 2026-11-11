@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Iniciando Concord...</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      width: 300px;
+      height: 360px;
+      background: #23272A;
+      color: #F2F3F5;
+      font-family: "gg sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      -webkit-app-region: drag;
+    }
+    .mascot-wrap {
+      width: 136px;
+      height: 136px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: floatMascot 2.2s ease-in-out infinite;
+      filter: drop-shadow(0 12px 24px rgba(88, 101, 242, 0.35));
+    }
+    .mascot-wrap img {
+      width: 128px;
+      height: 128px;
+      object-fit: contain;
+    }
+    .wordmark {
+      height: 32px;
+      margin-top: 12px;
+      margin-bottom: 20px;
+      object-fit: contain;
+    }
+    .status {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #B5BAC1;
+      margin-bottom: 12px;
+    }
+    .progress-track {
+      width: 190px;
+      height: 6px;
+      background: #1E1F22;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      width: 45%;
+      height: 100%;
+      background: linear-gradient(90deg, #5865F2, #7983F5);
+      border-radius: 99px;
+      animation: indeterminate 1.4s ease-in-out infinite;
+    }
+    .sub {
+      margin-top: 16px;
+      font-size: 11px;
+      color: #80848E;
+    }
+    @keyframes floatMascot {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-8px) rotate(1.5deg); }
+    }
+    @keyframes indeterminate {
+      0% { transform: translateX(-100%); width: 45%; }
+      50% { transform: translateX(65%); width: 60%; }
+      100% { transform: translateX(220%); width: 45%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="mascot-wrap">
+    <img src="../logo-concord.png" alt="Concord Mascot" />
+  </div>
+  <img class="wordmark" src="../concord.png" alt="Concord" />
+  <div class="status" id="splash-status">Iniciando Concord...</div>
+  <div class="progress-track">
+    <div class="progress-bar"></div>
+  </div>
+  <div class="sub">WebRTC P2P Mesh • 1080p 60fps</div>
+</body>
+</html>
