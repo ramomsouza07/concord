@@ -4,6 +4,29 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const { ConcordSupabase } = require("./supabase");
+
+function loadEnv() {
+  const envPath = path.join(__dirname, "..", ".env");
+  if (fs.existsSync(envPath)) {
+    try {
+      const content = fs.readFileSync(envPath, "utf8");
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIdx = trimmed.indexOf("=");
+        if (eqIdx > 0) {
+          const k = trimmed.slice(0, eqIdx).trim();
+          const v = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+          if (!process.env[k]) {
+            process.env[k] = v;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+}
+loadEnv();
 
 function resolveDataDir() {
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
@@ -250,8 +273,33 @@ class ConcordDatabase {
   constructor() {
     this.state = null;
     this.sqlite = null;
+    this.supabase = new ConcordSupabase();
+    this.lastSupabaseSync = 0;
     this.load();
     this.initSqliteMirror();
+  }
+
+  async ensureLoaded(force = false) {
+    if (this.supabase && this.supabase.isConfigured()) {
+      const now = Date.now();
+      if (force || now - this.lastSupabaseSync > 1200) {
+        const cloudState = await this.supabase.loadState();
+        if (cloudState && Array.isArray(cloudState.users)) {
+          const localRealtime = this.state && this.state.realtime;
+          this.state = cloudState;
+          if (localRealtime && !process.env.VERCEL) {
+            this.state.realtime = { ...cloudState.realtime, ...localRealtime };
+          }
+          this.lastSupabaseSync = now;
+        } else if (!this.state || !Array.isArray(this.state.users)) {
+          this.load();
+          if (this.state) {
+            await this.supabase.saveState(this.state);
+            this.lastSupabaseSync = now;
+          }
+        }
+      }
+    }
   }
 
   load() {
@@ -344,6 +392,19 @@ class ConcordDatabase {
         fs.renameSync(tmpPath, DB_JSON_PATH);
         this.syncToSqlite();
       } catch (_) {}
+    }
+
+    if (this.supabase && this.supabase.isConfigured()) {
+      this.supabase.saveState(this.state).catch((err) => {
+        console.warn("[Supabase] Aviso ao persistir estado em background:", err.message);
+      });
+    }
+  }
+
+  async saveAsync() {
+    this.save();
+    if (this.supabase && this.supabase.isConfigured()) {
+      await this.supabase.saveState(this.state);
     }
   }
 

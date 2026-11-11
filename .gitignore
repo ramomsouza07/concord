@@ -7,3 +7,4 @@ data/uploads/*
 *.tmp
 *.log
 cloudflared.exe
+.env.example

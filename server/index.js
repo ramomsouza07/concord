@@ -580,12 +580,41 @@ async function requestHandler(req, res) {
     const urlObj = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const pathname = decodeURIComponent(urlObj.pathname);
 
+    // Garante sincronização em nuvem com Supabase em requisições de API (especialmente na Vercel Serverless)
+    if (pathname.startsWith("/api/")) {
+      await db.ensureLoaded();
+    }
+
+    if (req.method === "GET" && pathname === "/api/status/supabase") {
+      const configured = !!(db.supabase && db.supabase.isConfigured());
+      let connected = false;
+      let error = null;
+      if (configured) {
+        try {
+          await db.supabase.request("/concord_state?limit=1");
+          connected = true;
+        } catch (e) {
+          error = e.message;
+        }
+      }
+      const { ConcordSupabase } = require("./supabase");
+      sendJson(res, 200, {
+        configured,
+        connected,
+        error,
+        sql: ConcordSupabase.getMigrationSql()
+      });
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/health") {
+      const supabaseConfigured = !!(db.supabase && db.supabase.isConfigured());
       sendJson(res, 200, {
         ok: true,
         name: "Concord Server",
         version: db.state.meta.version,
         serverless: !!process.env.VERCEL,
+        supabase: supabaseConfigured,
         usersCount: db.state.users.filter((u) => !u.isSystem).length,
         onlineCount: getPublicUsers().filter((u) => !u.isSystem && u.online).length
       });
@@ -595,6 +624,7 @@ async function requestHandler(req, res) {
     if (req.method === "POST" && pathname === "/api/auth/register") {
       const body = await readJsonBody(req);
       const result = db.registerUser(body);
+      await db.saveAsync();
       wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
       sendJson(res, 201, result);
       return;
@@ -603,6 +633,7 @@ async function requestHandler(req, res) {
     if (req.method === "POST" && pathname === "/api/auth/login") {
       const body = await readJsonBody(req);
       const result = db.loginUser(body);
+      await db.saveAsync();
       wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
       sendJson(res, 200, result);
       return;
@@ -659,7 +690,7 @@ async function requestHandler(req, res) {
           lastSeq > 0 ? allEvents.filter((e) => e.seq > lastSeq) : allEvents.slice(-50);
         const signals = db.drainSignals(user.id);
         if (signals.length > 0 || outbox.length > 0) {
-          db.save();
+          await db.saveAsync();
         }
 
         sendJson(res, 200, {
@@ -776,6 +807,7 @@ async function requestHandler(req, res) {
       if (req.method === "POST" && pathname === "/api/friends/request") {
         const body = await readJsonBody(req);
         const friendship = db.sendFriendRequest(user.id, body.username);
+        await db.saveAsync();
         wsBroadcast("FRIEND_UPDATE", { friendship, users: getPublicUsers() });
         sendJson(res, 200, { friendship });
         return;

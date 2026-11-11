@@ -253,7 +253,8 @@ class ConcordApp {
       btn.textContent = "Testando...";
       try {
         const res = await this.gateway.request("/api/health");
-        btn.textContent = `✅ Online (${res.onlineCount || 0})`;
+        const mode = res.supabase ? "Supabase" : res.serverless ? "Vercel" : "Local";
+        btn.textContent = `✅ Online (${mode})`;
       } catch (err) {
         btn.textContent = "❌ Offline";
         this.showAuthError(`Não foi possível conectar a ${cleanUrl}: ${err.message}`);

@@ -325,3 +325,20 @@ test("8. Persistência de Conta com Tokens Assinados e Re-hidratação Stateless
   const forgedToken = reg.token.slice(0, -6) + "000000";
   assert.equal(dbB.getUserByToken(forgedToken), null, "Token com assinatura violada deve ser rejeitado");
 });
+
+test("9. Integração com Banco em Nuvem Supabase e Migração Centralizada", async (t) => {
+  const { ConcordSupabase } = require("../server/supabase");
+  const sql = ConcordSupabase.getMigrationSql();
+
+  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS concord_state"), "Deve conter script DDL da tabela concord_state");
+  assert.ok(sql.includes("data JSONB NOT NULL"), "Estado deve ser armazenado como JSONB para sincronização de alta velocidade");
+  assert.ok(sql.includes("ROW LEVEL SECURITY"), "Deve configurar RLS para segurança no Supabase");
+
+  const client = new ConcordSupabase();
+  // Quando desconfigurado, isConfigured() é false e métodos retornam null com segurança sem quebrar o app
+  assert.equal(client.isConfigured(), false);
+  const state = await client.loadState();
+  assert.equal(state, null);
+  const saved = await client.saveState({ test: 1 });
+  assert.equal(saved, false);
+});
