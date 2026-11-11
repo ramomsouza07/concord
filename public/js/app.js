@@ -57,6 +57,7 @@ class ConcordApp {
     this.bindModalEvents();
     this.bindGatewayEvents();
     this.bindShortcuts();
+    this.bindUnloadEvents();
 
     const serverInput = document.getElementById("auth-server-url");
     if (serverInput) {
@@ -197,6 +198,41 @@ class ConcordApp {
         this.handleToggleDeafen();
       }
     });
+  }
+
+  bindUnloadEvents() {
+    const handleUnload = () => {
+      if (this.rtc && this.rtc.activeChannelId) {
+        const chId = this.rtc.activeChannelId;
+        const payload = JSON.stringify({
+          token: this.gateway.token,
+          channelId: chId,
+          userId: this.me ? this.me.id : null
+        });
+        const leaveUrl = `${this.gateway.serverUrl}/api/voice/leave`;
+        try {
+          if (navigator.sendBeacon) {
+            navigator.sendBeacon(leaveUrl, payload);
+          }
+        } catch (_) {}
+        try {
+          fetch(leaveUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.gateway.token}`
+            },
+            body: payload,
+            keepalive: true
+          }).catch(() => {});
+        } catch (_) {}
+        this.gateway.send("VOICE_LEAVE", { channelId: chId });
+        this.rtc.leaveVoiceChannel(false);
+      }
+    };
+
+    window.addEventListener("pagehide", handleUnload);
+    window.addEventListener("beforeunload", handleUnload);
   }
 
   // ==========================================================================
@@ -343,6 +379,21 @@ class ConcordApp {
     this.dmChannels = data.dmChannels || [];
     this.friendships = data.friendships || [];
     this.voiceStates = data.voiceStates || [];
+
+    // Se o cliente local não está em call (ex: recém-aberto ou recarregou a página),
+    // garante que o próprio usuário não apareça como ghost conectado em canal de voz
+    if (this.me && (!this.rtc || !this.rtc.activeChannelId)) {
+      const wasInVoice = this.voiceStates.some((vs) => vs.userId === this.me.id);
+      if (wasInVoice) {
+        this.voiceStates = this.voiceStates.filter((vs) => vs.userId !== this.me.id);
+        this.gateway
+          .request("/api/voice/leave", {
+            method: "POST",
+            body: { userId: this.me.id }
+          })
+          .catch(() => {});
+      }
+    }
 
     if (data.serverInfo && data.serverInfo.inviteCode) {
       this.masterInviteCode = data.serverInfo.inviteCode;
@@ -1653,9 +1704,13 @@ class ConcordApp {
           avatarBox.classList.toggle("avatar-speaking-ring", !!isSpeaking);
         }
         const videoEl = tile.querySelector("video");
-        if (videoEl && card.stream && videoEl.srcObject !== card.stream) {
-          videoEl.srcObject = card.stream;
-          videoEl.play().catch(() => {});
+        if (videoEl && card.stream) {
+          if (videoEl.srcObject !== card.stream) {
+            videoEl.srcObject = card.stream;
+          }
+          if (videoEl.paused) {
+            videoEl.play().catch(() => {});
+          }
         }
         const volLabel = tile.querySelector(".vol-label");
         const slider = tile.querySelector(".tile-vol-slider");
@@ -1686,6 +1741,9 @@ class ConcordApp {
       videoEl.muted = true; // O áudio já é reproduzido e amplificado pela cadeia Web Audio API
       videoEl.srcObject = card.stream;
       videoEl.onloadedmetadata = () => {
+        videoEl.play().catch(() => {});
+      };
+      videoEl.oncanplay = () => {
         videoEl.play().catch(() => {});
       };
       tile.appendChild(videoEl);

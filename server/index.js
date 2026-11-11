@@ -381,6 +381,26 @@ function handleWsMessage(client, rawText) {
       return;
     }
     client.userId = user.id;
+
+    // Fecha conexões antigas do mesmo usuário para evitar sockets órfãos/fantasmas
+    for (const other of clients) {
+      if (other !== client && other.userId === user.id) {
+        try {
+          other.socket.destroy();
+        } catch (_) {}
+        clients.delete(other);
+      }
+    }
+
+    // Se o usuário tinha estado de voz de uma sessão anterior (ex: reload da página),
+    // remove o ghost state imediatamente para não ficar preso na call dos amigos
+    if (
+      voiceStates.has(user.id) ||
+      (db.state.realtime && db.state.realtime.voiceStates && db.state.realtime.voiceStates[user.id])
+    ) {
+      processRealtimeClientAction(user.id, "VOICE_LEAVE", {}, client);
+    }
+
     db.touchHeartbeat(user.id);
     wsSend(client, "READY", buildBootstrapPayload(user));
     wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
@@ -485,22 +505,18 @@ function handleWebSocketUpgrade(req, socket) {
     if (!clients.has(client)) return;
     clients.delete(client);
     if (client.userId) {
-      const stillConnected = Array.from(clients).some((c) => c.userId === client.userId);
+      const stillConnected = Array.from(clients).some(
+        (c) => c !== client && c.userId === client.userId && c.socket && !c.socket.destroyed
+      );
       if (!stillConnected) {
-        if (voiceStates.has(client.userId)) {
-          const prev = voiceStates.get(client.userId);
-          voiceStates.delete(client.userId);
-          if (db.state.realtime && db.state.realtime.voiceStates) {
-            delete db.state.realtime.voiceStates[client.userId];
-          }
-          wsBroadcast("VOICE_STATE_UPDATE", {
-            action: "leave",
-            userId: client.userId,
-            previousChannelId: prev.channelId,
-            voiceStates: getCombinedVoiceStates()
-          });
+        if (
+          voiceStates.has(client.userId) ||
+          (db.state.realtime && db.state.realtime.voiceStates && db.state.realtime.voiceStates[client.userId])
+        ) {
+          processRealtimeClientAction(client.userId, "VOICE_LEAVE", {});
+        } else {
+          wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
         }
-        wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
       }
     }
   };
@@ -589,6 +605,26 @@ async function requestHandler(req, res) {
       const result = db.loginUser(body);
       wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
       sendJson(res, 200, result);
+      return;
+    }
+
+    // Saída limpa de canal de voz (suporta navigator.sendBeacon, keepalive fetch e chamadas diretas no reload da página)
+    if (req.method === "POST" && pathname === "/api/voice/leave") {
+      let body = {};
+      try {
+        body = await readJsonBody(req);
+      } catch (_) {}
+      let user = getAuthenticatedUser(req);
+      if (!user && body.token) {
+        user = db.getUserByToken(body.token);
+      }
+      if (!user && body.userId) {
+        user = db.findUserById(body.userId);
+      }
+      if (user) {
+        processRealtimeClientAction(user.id, "VOICE_LEAVE", {});
+      }
+      sendJson(res, 200, { ok: true, action: "leave", userId: user ? user.id : null });
       return;
     }
 

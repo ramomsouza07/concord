@@ -640,7 +640,19 @@ class ConcordWebRTCMesh {
 
   async ensurePeerConnection(peerUserId, isInitiator = false) {
     if (this.peers.has(peerUserId)) {
-      return this.peers.get(peerUserId);
+      const existing = this.peers.get(peerUserId);
+      if (
+        existing &&
+        existing.pc &&
+        (existing.pc.connectionState === "closed" ||
+          existing.pc.connectionState === "failed" ||
+          existing.pc.iceConnectionState === "closed" ||
+          existing.pc.iceConnectionState === "failed")
+      ) {
+        this.destroyPeer(peerUserId);
+      } else {
+        return existing;
+      }
     }
 
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
@@ -810,7 +822,21 @@ class ConcordWebRTCMesh {
   }
 
   async handleSignal({ fromUserId, signalType, sdp, candidate, meta }) {
-    const entry = await this.ensurePeerConnection(fromUserId, false);
+    let entry = this.peers.get(fromUserId);
+    if (signalType === "offer" && entry && entry.pc) {
+      if (
+        entry.pc.connectionState === "failed" ||
+        entry.pc.connectionState === "closed" ||
+        entry.pc.iceConnectionState === "failed" ||
+        entry.pc.iceConnectionState === "disconnected"
+      ) {
+        this.destroyPeer(fromUserId);
+        entry = null;
+      }
+    }
+    if (!entry) {
+      entry = await this.ensurePeerConnection(fromUserId, false);
+    }
     const pc = entry.pc;
 
     if (signalType === "track-stopped") {
@@ -845,6 +871,10 @@ class ConcordWebRTCMesh {
           tInfo.quality = entry.streamMeta.screenQuality || "1080p 60fps";
         } else if (tId === entry.streamMeta.cameraTrackId) {
           tInfo.kind = "camera";
+        } else if (entry.streamMeta.cameraActive && !entry.streamMeta.screenActive) {
+          tInfo.kind = "camera";
+        } else if (entry.streamMeta.screenActive && !entry.streamMeta.cameraActive) {
+          tInfo.kind = "screen";
         }
       }
       this.notifyUI();
@@ -891,6 +921,7 @@ class ConcordWebRTCMesh {
           entry.negotiationQueued = false;
           await this.renegotiatePeer(fromUserId);
         }
+        this.notifyUI();
       } else if (signalType === "ice-candidate" && candidate) {
         if (!pc.remoteDescription || !pc.remoteDescription.type) {
           entry.iceCandidateQueue.push(candidate);

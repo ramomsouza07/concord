@@ -725,6 +725,35 @@ namespace ConcordNativeServer
                     {
                         await WsSend(client, "PONG", d);
                     }
+                    else if (t == "IDENTIFY")
+                    {
+                        string idToken = d != null && d.ContainsKey("token") ? Convert.ToString(d["token"]) : "";
+                        var idUser = GetUserByToken(idToken);
+                        if (idUser != null)
+                        {
+                            client.UserId = Convert.ToString(idUser["id"]);
+                            // Fecha sockets antigos do mesmo usuário
+                            foreach (var kv in _clients)
+                            {
+                                if (kv.Key != client.Id && kv.Value.UserId == client.UserId)
+                                {
+                                    kv.Value.Connected = false;
+                                    WsClient oldC;
+                                    _clients.TryRemove(kv.Key, out oldC);
+                                }
+                            }
+                            // Limpa ghost voice state de sessões anteriores
+                            Dictionary<string, object> removed;
+                            if (_voiceStates.TryRemove(client.UserId, out removed))
+                            {
+                                var vList = new ArrayList();
+                                foreach (var kv in _voiceStates) vList.Add(kv.Value);
+                                await WsBroadcast("VOICE_STATE_UPDATE", new Dictionary<string, object> { { "action", "leave" }, { "userId", client.UserId }, { "voiceStates", vList } });
+                            }
+                            await WsSend(client, "READY", BuildBootstrap(idUser));
+                            await WsBroadcast("PRESENCE_UPDATE", new Dictionary<string, object> { { "users", GetPublicUsers() } });
+                        }
+                    }
                     else if (t == "TYPING_START" && client.UserId != null && d != null && d.ContainsKey("channelId"))
                     {
                         await WsBroadcast("TYPING_START", new Dictionary<string, object>
@@ -786,14 +815,28 @@ namespace ConcordNativeServer
             client.Connected = false;
             WsClient _;
             _clients.TryRemove(client.Id, out _);
-            if (client.UserId != null && !IsUserOnline(client.UserId))
+            if (client.UserId != null)
             {
-                Dictionary<string, object> __;
-                _voiceStates.TryRemove(client.UserId, out __);
-                var vList = new ArrayList();
-                foreach (var kv in _voiceStates) vList.Add(kv.Value);
-                await WsBroadcast("VOICE_STATE_UPDATE", new Dictionary<string, object> { { "action", "leave" }, { "userId", client.UserId }, { "voiceStates", vList } });
-                await WsBroadcast("PRESENCE_UPDATE", new Dictionary<string, object> { { "users", GetPublicUsers() } });
+                bool otherConnected = false;
+                foreach (var kv in _clients)
+                {
+                    if (kv.Value.Connected && kv.Value.UserId == client.UserId)
+                    {
+                        otherConnected = true;
+                        break;
+                    }
+                }
+                if (!otherConnected)
+                {
+                    Dictionary<string, object> __;
+                    if (_voiceStates.TryRemove(client.UserId, out __))
+                    {
+                        var vList = new ArrayList();
+                        foreach (var kv in _voiceStates) vList.Add(kv.Value);
+                        await WsBroadcast("VOICE_STATE_UPDATE", new Dictionary<string, object> { { "action", "leave" }, { "userId", client.UserId }, { "voiceStates", vList } });
+                    }
+                    await WsBroadcast("PRESENCE_UPDATE", new Dictionary<string, object> { { "users", GetPublicUsers() } });
+                }
             }
         }
 
@@ -953,6 +996,40 @@ namespace ConcordNativeServer
                     safe.Remove("passwordHash");
                     await WsBroadcast("PRESENCE_UPDATE", new Dictionary<string, object> { { "users", GetPublicUsers() } });
                     SendJson(outStream, 200, new Dictionary<string, object> { { "user", safe }, { "token", token } });
+                    return;
+                }
+
+                if (req.Method == "POST" && path == "/api/voice/leave")
+                {
+                    string authH = req.Headers.ContainsKey("Authorization") ? req.Headers["Authorization"] : "";
+                    var user = GetUserByToken(authH);
+                    if (user == null && req.Body.Length > 0)
+                    {
+                        try
+                        {
+                            var bMap = _json.Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(req.Body));
+                            if (bMap != null && bMap.ContainsKey("token"))
+                            {
+                                user = GetUserByToken(Convert.ToString(bMap["token"]));
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (user != null)
+                    {
+                        string uid = Convert.ToString(user["id"]);
+                        Dictionary<string, object> rem;
+                        if (_voiceStates.TryRemove(uid, out rem))
+                        {
+                            var vList = new ArrayList();
+                            foreach (var kv in _voiceStates) vList.Add(kv.Value);
+                            await WsBroadcast("VOICE_STATE_UPDATE", new Dictionary<string, object> { { "action", "leave" }, { "userId", uid }, { "voiceStates", vList } });
+                            await WsBroadcast("PRESENCE_UPDATE", new Dictionary<string, object> { { "users", GetPublicUsers() } });
+                        }
+                    }
+
+                    SendJson(outStream, 200, new Dictionary<string, object> { { "ok", true }, { "action", "leave" } });
                     return;
                 }
 

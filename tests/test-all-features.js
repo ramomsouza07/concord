@@ -282,6 +282,16 @@ test("7. Endpoints HTTP REST: Health, Auth, Bootstrap e Upload", async (t) => {
     const syncData = await syncRes.json();
     assert.ok(typeof syncData.seq === "number");
     assert.ok(Array.isArray(syncData.voiceStates));
+
+    // 6. Teste de saída limpa no reload (/api/voice/leave com sendBeacon body { token })
+    const leaveRes = await fetch(`${baseUrl}/api/voice/leave`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: authToken })
+    });
+    assert.equal(leaveRes.status, 200);
+    const leaveData = await leaveRes.json();
+    assert.equal(leaveData.ok, true);
   } finally {
     if (server.closeAllConnections) server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
