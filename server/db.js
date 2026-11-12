@@ -891,6 +891,28 @@ class ConcordDatabase {
     return queue;
   }
 
+  async drainSignalsAsync(userId) {
+    const memorySignals = this.drainSignals(userId);
+    if (!this.supabase || !this.supabase.isConfigured() || !this.supabaseTablesReady) {
+      return memorySignals;
+    }
+    try {
+      const rows = await this.supabase.select(
+        TABLES.signals,
+        `target_user_id=eq.${encodeURIComponent(userId)}&order=id.asc&limit=100`
+      );
+      if (Array.isArray(rows) && rows.length > 0) {
+        const ids = rows.map((r) => r.id).filter(Boolean);
+        if (ids.length > 0) {
+          this.supabase.delete(TABLES.signals, inList("id", ids)).catch(() => {});
+        }
+        const dbSignals = rows.map((r) => r.payload).filter(Boolean);
+        return [...memorySignals, ...dbSignals];
+      }
+    } catch (_) {}
+    return memorySignals;
+  }
+
   touchHeartbeat(userId) {
     if (!this.state.realtime) {
       this.state.realtime = { voiceStates: {}, heartbeats: {}, signalQueues: {}, events: [] };
@@ -1088,22 +1110,25 @@ class ConcordDatabase {
         console.warn("[Prisma] Aviso ao registrar conta no Prisma:", err.message);
       });
     } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
-      Promise.all([
-        this.supabase.insert(TABLES.users, userToDb(newUser), { onConflict: "id", mode: "merge" }),
-        memberRowsToInsert.length > 0
-          ? this.supabase.insert(TABLES.members, memberRowsToInsert, { mode: "ignore" })
-          : Promise.resolve(),
-        friendshipRowsToInsert.length > 0
-          ? this.supabase.insert(TABLES.friendships, friendshipRowsToInsert, { mode: "ignore" })
-          : Promise.resolve(),
-        storedInvite
-          ? this.supabase.update(TABLES.invites, `code=eq.${encodeValue(storedInvite.code)}`, {
-              uses: storedInvite.uses
-            })
-          : Promise.resolve()
-      ]).catch((err) => {
-        console.warn("[Supabase] Aviso ao registrar conta no banco em nuvem:", err.message);
-      });
+      this.supabase.insert(TABLES.users, userToDb(newUser), { onConflict: "id", mode: "merge" })
+        .then(() => {
+          return Promise.all([
+            memberRowsToInsert.length > 0
+              ? this.supabase.insert(TABLES.members, memberRowsToInsert, { mode: "ignore" })
+              : Promise.resolve(),
+            friendshipRowsToInsert.length > 0
+              ? this.supabase.insert(TABLES.friendships, friendshipRowsToInsert, { mode: "ignore" })
+              : Promise.resolve(),
+            storedInvite
+              ? this.supabase.update(TABLES.invites, `code=eq.${encodeValue(storedInvite.code)}`, {
+                  uses: storedInvite.uses
+                })
+              : Promise.resolve()
+          ]);
+        })
+        .catch((err) => {
+          console.warn("[Supabase] Aviso ao registrar conta no banco em nuvem:", err.message);
+        });
     }
 
     return { user: this.sanitizeUser(newUser), token };
@@ -1782,7 +1807,7 @@ class ConcordDatabase {
       this.prisma.setVoiceState(state).catch((err) => {
         console.warn("[Prisma] Aviso ao persistir estado de chamada no Prisma:", err.message);
       });
-    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+    } else if (this.supabase && this.supabase.isConfigured()) {
       this.supabase
         .insert(TABLES.voiceStates, voiceStateToDb(state), { onConflict: "user_id", mode: "merge" })
         .catch((err) => {
@@ -1795,7 +1820,7 @@ class ConcordDatabase {
     this.setVoiceState(userId, state);
     if (this.prisma && this.prisma.isConfigured()) {
       await this.prisma.setVoiceState(state).catch(() => {});
-    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+    } else if (this.supabase && this.supabase.isConfigured()) {
       await this.supabase
         .insert(TABLES.voiceStates, voiceStateToDb(state), { onConflict: "user_id", mode: "merge" })
         .catch(() => {});
@@ -1818,7 +1843,7 @@ class ConcordDatabase {
 
     if (this.prisma && this.prisma.isConfigured()) {
       this.prisma.updateVoiceState(userId, updates).catch(() => {});
-    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+    } else if (this.supabase && this.supabase.isConfigured()) {
       this.supabase.update(TABLES.voiceStates, `user_id=eq.${encodeValue(userId)}`, patch).catch(() => {});
     }
   }
@@ -1827,7 +1852,7 @@ class ConcordDatabase {
     this.updateVoiceState(userId, updates);
     if (this.prisma && this.prisma.isConfigured()) {
       await this.prisma.updateVoiceState(userId, updates).catch(() => {});
-    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+    } else if (this.supabase && this.supabase.isConfigured()) {
       const current = this.state.realtime && this.state.realtime.voiceStates[userId];
       if (current) {
         await this.supabase
@@ -1844,7 +1869,7 @@ class ConcordDatabase {
     // Remove do Prisma ou Supabase indicando que o usuário saiu de chamada
     if (this.prisma && this.prisma.isConfigured()) {
       this.prisma.removeVoiceState(userId).catch(() => {});
-    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+    } else if (this.supabase && this.supabase.isConfigured()) {
       this.supabase.remove(TABLES.voiceStates, `user_id=eq.${encodeValue(userId)}`).catch((err) => {
         console.warn("[Supabase] Aviso ao remover estado de chamada no Supabase:", err.message);
       });
@@ -1855,7 +1880,7 @@ class ConcordDatabase {
     this.removeVoiceState(userId);
     if (this.prisma && this.prisma.isConfigured()) {
       await this.prisma.removeVoiceState(userId).catch(() => {});
-    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+    } else if (this.supabase && this.supabase.isConfigured()) {
       await this.supabase.remove(TABLES.voiceStates, `user_id=eq.${encodeValue(userId)}`).catch(() => {});
     }
   }

@@ -159,7 +159,7 @@ test("5. Sinalização WebRTC e Gerenciamento de Canais de Voz", async (t) => {
     meta: { kind: "screen" }
   };
   db.enqueueSignal(bobId, stopSignal);
-  const stopQueued = db.drainSignals(bobId);
+  const stopQueued = await db.drainSignalsAsync(bobId);
   assert.equal(stopQueued[0].signalType, "track-stopped");
   assert.equal(stopQueued[0].meta.kind, "screen");
 });

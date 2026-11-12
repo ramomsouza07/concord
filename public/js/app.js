@@ -2061,6 +2061,27 @@ class ConcordApp {
       document.getElementById("vad-val-label").textContent = e.target.value;
     });
 
+    const testServerBtn = document.getElementById("btn-test-settings-server");
+    if (testServerBtn) {
+      testServerBtn.addEventListener("click", async () => {
+        const urlInput = document.getElementById("set-server-url");
+        const cleanUrl = this.gateway.setServerUrl(urlInput.value);
+        urlInput.value = cleanUrl;
+        testServerBtn.textContent = "Testando...";
+        try {
+          const res = await this.gateway.request("/api/health");
+          const mode = res.supabase ? "Supabase" : res.serverless ? "Vercel" : "Local";
+          testServerBtn.textContent = `✅ Online (${mode})`;
+        } catch (err) {
+          testServerBtn.textContent = "❌ Offline";
+          alert(`Não foi possível conectar a ${cleanUrl}: ${err.message}`);
+        }
+        setTimeout(() => {
+          testServerBtn.textContent = "Testar";
+        }, 2500);
+      });
+    }
+
     document.getElementById("btn-save-settings").addEventListener("click", async () => {
       const displayName = document.getElementById("set-display-name").value.trim();
       const status = document.getElementById("set-status").value;
@@ -2084,6 +2105,13 @@ class ConcordApp {
       localStorage.setItem("concord_video_input", videoIn);
 
       this.rtc.updateMicTrackEnabled();
+
+      const serverUrlInput = document.getElementById("set-server-url");
+      if (serverUrlInput && serverUrlInput.value.trim() && serverUrlInput.value.trim() !== this.gateway.serverUrl) {
+        const newUrl = this.gateway.setServerUrl(serverUrlInput.value.trim());
+        serverUrlInput.value = newUrl;
+        this.gateway.connect();
+      }
 
       try {
         const res = await this.gateway.request("/api/users/me", {
@@ -2194,6 +2222,11 @@ class ConcordApp {
           }
         }
       } catch (_) {}
+    }
+
+    const serverUrlInput = document.getElementById("set-server-url");
+    if (serverUrlInput) {
+      serverUrlInput.value = this.gateway.serverUrl || "";
     }
 
     document.getElementById("modal-settings").classList.remove("hidden");

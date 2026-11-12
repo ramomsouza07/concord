@@ -439,6 +439,7 @@ class ConcordWebRTCMesh {
         for (const track of this.cameraStream.getVideoTracks()) {
           const sender = entry.pc.addTrack(track, this.cameraStream);
           entry.cameraSenders.push(sender);
+          this.applyCameraSenderParameters(sender);
         }
         this.sendStreamMeta(peerUserId);
         await this.renegotiatePeer(peerUserId);
@@ -563,6 +564,20 @@ class ConcordWebRTCMesh {
     return stream;
   }
 
+  async applyCameraSenderParameters(sender) {
+    try {
+      if (!sender || !sender.getParameters) return;
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = 1200000;
+      params.encodings[0].maxFramerate = 30;
+      params.degradationPreference = "maintain-framerate";
+      await sender.setParameters(params);
+    } catch (_) {}
+  }
+
   async boostVideoSenderBitrate(sender, width, fps) {
     try {
       if (!sender.getParameters) return;
@@ -573,6 +588,7 @@ class ConcordWebRTCMesh {
       const maxBitrate = width >= 2560 ? 8000000 : width >= 1920 ? 5500000 : 3000000;
       params.encodings[0].maxBitrate = maxBitrate;
       params.encodings[0].maxFramerate = fps;
+      params.degradationPreference = "maintain-framerate";
       await sender.setParameters(params);
     } catch (_) {}
   }
@@ -695,7 +711,9 @@ class ConcordWebRTCMesh {
     }
     if (this.cameraStream) {
       for (const track of this.cameraStream.getVideoTracks()) {
-        entry.cameraSenders.push(pc.addTrack(track, this.cameraStream));
+        const sender = pc.addTrack(track, this.cameraStream);
+        entry.cameraSenders.push(sender);
+        this.applyCameraSenderParameters(sender);
       }
     }
     if (this.screenStream) {

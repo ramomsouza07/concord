@@ -465,6 +465,20 @@
         <p style="font-size:12px;color:var(--text-muted);margin-top:6px;">
           ⌨️ <strong>Atalhos Globais Desktop:</strong> <code>Ctrl+Shift+M</code> (Mutar Microfone) • <code>Ctrl+Shift+D</code> (Desativar Áudio)
         </p>
+
+        <hr style="border:none;border-top:1px solid var(--border-subtle);margin:16px 0;" />
+        <h4 style="color:var(--text-header);margin-bottom:10px;">🌐 Servidor & Conexão (Localhost, Túnel ou Vercel)</h4>
+        <div class="form-group">
+          <label class="form-label">Endereço do Servidor Concord</label>
+          <div style="display:flex;gap:8px;">
+            <input id="set-server-url" type="text" class="form-input" placeholder="http://localhost:3456" />
+            <button id="btn-test-settings-server" type="button" class="btn-secondary" style="white-space:nowrap;">Testar</button>
+          </div>
+          <p style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.4;">
+            🚀 <strong>Zero Lag / Câmera Sem Delay:</strong> Use o Cloudflare Tunnel (<code>https://....trycloudflare.com</code>) ou Radmin VPN (<code>http://26.x.x.x:3456</code>) para sinalização WebSocket direta com ping baixo.<br />
+            ☁️ <strong>Padrão Vercel:</strong> Deixe vazio ou coloque o link da Vercel para usar a nuvem global.
+          </p>
+        </div>
       </div>
       <div class="modal-footer" style="justify-content:space-between;">
         <button id="btn-logout" class="btn-danger">Sair da Conta</button>

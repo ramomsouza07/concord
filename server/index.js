@@ -724,7 +724,7 @@ async function requestHandler(req, res) {
         const allEvents = (db.state.realtime && db.state.realtime.events) || [];
         const newEvents =
           lastSeq > 0 ? allEvents.filter((e) => e.seq > lastSeq) : allEvents.slice(-50);
-        const signals = db.drainSignals(user.id);
+        const signals = await db.drainSignalsAsync(user.id);
         if (signals.length > 0 || outbox.length > 0) {
           await db.saveAsync();
         }

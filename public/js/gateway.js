@@ -19,18 +19,16 @@ class ConcordGateway {
     this.connected = false;
 
     // Estado para modo Vercel Serverless Fast-Sync (/api/sync)
-    this.serverlessMode = /\.vercel\.app$/i.test(window.location.hostname);
+    this.serverlessMode = /\.vercel\.app/i.test(this.serverUrl);
     this.lastSeq = 0;
     this.outbox = [];
     this.syncInFlight = false;
     this.pendingImmediateSync = false;
+    this.syncDebounceTimer = null;
   }
 
   getStoredServerUrl() {
     const saved = localStorage.getItem("concord_server_url");
-    if (window.location.hostname.endsWith(".vercel.app")) {
-      return window.location.origin;
-    }
     if (saved && saved.trim()) {
       return saved.trim().replace(/\/+$/, "");
     }
@@ -312,6 +310,14 @@ class ConcordGateway {
     }
   }
 
+  scheduleServerlessSync() {
+    if (this.syncDebounceTimer) return;
+    this.syncDebounceTimer = setTimeout(() => {
+      this.syncDebounceTimer = null;
+      this.runSyncTick();
+    }, 35);
+  }
+
   send(eventType, data = {}) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ t: eventType, d: data }));
@@ -319,7 +325,7 @@ class ConcordGateway {
     }
     if (this.serverlessMode && eventType !== "PING") {
       this.outbox.push({ t: eventType, d: data });
-      this.runSyncTick();
+      this.scheduleServerlessSync();
     }
   }
 
