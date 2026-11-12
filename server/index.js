@@ -277,7 +277,7 @@ function processRealtimeClientAction(userId, t, d, excludeWsClient = null) {
       joinedAt: (prev && prev.channelId === channelId && prev.joinedAt) || new Date().toISOString()
     };
     voiceStates.set(userId, state);
-    db.state.realtime.voiceStates[userId] = state;
+    db.setVoiceState(userId, state);
     const updatePayload = {
       action: "join",
       userId,
@@ -297,9 +297,7 @@ function processRealtimeClientAction(userId, t, d, excludeWsClient = null) {
       voiceStates.get(userId) ||
       (db.state.realtime && db.state.realtime.voiceStates[userId]);
     voiceStates.delete(userId);
-    if (db.state.realtime && db.state.realtime.voiceStates) {
-      delete db.state.realtime.voiceStates[userId];
-    }
+    db.removeVoiceState(userId);
     const updatePayload = {
       action: "leave",
       userId,
@@ -328,7 +326,7 @@ function processRealtimeClientAction(userId, t, d, excludeWsClient = null) {
     if (typeof d.speaking === "boolean") current.speaking = d.speaking;
 
     voiceStates.set(userId, current);
-    db.state.realtime.voiceStates[userId] = current;
+    db.updateVoiceState(userId, d);
     const updatePayload = {
       action: "update",
       userId,
@@ -586,21 +584,54 @@ async function requestHandler(req, res) {
     }
 
     if (req.method === "GET" && pathname === "/api/status/supabase") {
-      const configured = !!(db.supabase && db.supabase.isConfigured());
+      const prismaConfigured = !!(db.prisma && db.prisma.isConfigured());
+      const supabaseConfigured = !!(db.supabase && db.supabase.isConfigured());
       let connected = false;
+      let tablesReady = false;
       let error = null;
-      if (configured) {
+
+      if (prismaConfigured) {
         try {
-          await db.supabase.request("/concord_state?limit=1");
+          await db.prisma.client.user.findFirst();
           connected = true;
+          tablesReady = true;
         } catch (e) {
           error = e.message;
         }
+      } else if (supabaseConfigured) {
+        try {
+          const testRes = await db.supabase.select("concord_users", "limit=1");
+          connected = true;
+          tablesReady = Array.isArray(testRes);
+        } catch (e) {
+          error = e.message;
+          try {
+            await db.supabase.select("concord_state", "limit=1");
+            connected = true;
+          } catch (_) {}
+        }
       }
+
       const { ConcordSupabase } = require("./supabase");
       sendJson(res, 200, {
-        configured,
+        provider: prismaConfigured ? "Prisma ORM" : (supabaseConfigured ? "Supabase REST" : "Local SQLite/JSON"),
+        prisma: {
+          installed: true,
+          configured: prismaConfigured
+        },
+        supabase: {
+          configured: supabaseConfigured,
+          connected
+        },
+        configured: prismaConfigured || supabaseConfigured,
         connected,
+        tablesReady: tablesReady || db.supabaseTablesReady || db.prismaReady,
+        counts: {
+          users: db.state.users.filter((u) => !u.isSystem).length,
+          servers: db.state.servers.length,
+          voiceStates: Object.keys((db.state.realtime && db.state.realtime.voiceStates) || {}).length,
+          messages: Object.values(db.state.messages || {}).reduce((acc, m) => acc + (Array.isArray(m) ? m.length : 0), 0)
+        },
         error,
         sql: ConcordSupabase.getMigrationSql()
       });
@@ -608,14 +639,20 @@ async function requestHandler(req, res) {
     }
 
     if (req.method === "GET" && pathname === "/api/health") {
+      const prismaConfigured = !!(db.prisma && db.prisma.isConfigured());
       const supabaseConfigured = !!(db.supabase && db.supabase.isConfigured());
       sendJson(res, 200, {
         ok: true,
         name: "Concord Server",
         version: db.state.meta.version,
         serverless: !!process.env.VERCEL,
+        provider: prismaConfigured ? "Prisma" : (supabaseConfigured ? "Supabase" : "Local"),
+        prisma: prismaConfigured,
         supabase: supabaseConfigured,
+        tablesReady: db.prismaReady || db.supabaseTablesReady,
         usersCount: db.state.users.filter((u) => !u.isSystem).length,
+        serversCount: db.state.servers.length,
+        voiceActiveCount: Object.keys((db.state.realtime && db.state.realtime.voiceStates) || {}).length,
         onlineCount: getPublicUsers().filter((u) => !u.isSystem && u.online).length
       });
       return;
@@ -623,8 +660,7 @@ async function requestHandler(req, res) {
 
     if (req.method === "POST" && pathname === "/api/auth/register") {
       const body = await readJsonBody(req);
-      const result = db.registerUser(body);
-      await db.saveAsync();
+      const result = await db.registerUserAsync(body);
       wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
       sendJson(res, 201, result);
       return;
@@ -632,8 +668,7 @@ async function requestHandler(req, res) {
 
     if (req.method === "POST" && pathname === "/api/auth/login") {
       const body = await readJsonBody(req);
-      const result = db.loginUser(body);
-      await db.saveAsync();
+      const result = await db.loginUserAsync(body);
       wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
       sendJson(res, 200, result);
       return;
@@ -654,6 +689,7 @@ async function requestHandler(req, res) {
       }
       if (user) {
         processRealtimeClientAction(user.id, "VOICE_LEAVE", {});
+        await db.removeVoiceStateAsync(user.id);
       }
       sendJson(res, 200, { ok: true, action: "leave", userId: user ? user.id : null });
       return;
@@ -706,7 +742,7 @@ async function requestHandler(req, res) {
 
       if (req.method === "PATCH" && pathname === "/api/users/me") {
         const body = await readJsonBody(req);
-        const updated = db.updateUserProfile(user.id, body);
+        const updated = await db.updateUserProfileAsync(user.id, body);
         wsBroadcast("PRESENCE_UPDATE", { users: getPublicUsers() });
         sendJson(res, 200, { user: updated });
         return;
@@ -714,7 +750,7 @@ async function requestHandler(req, res) {
 
       if (req.method === "POST" && pathname === "/api/servers") {
         const body = await readJsonBody(req);
-        const srv = db.createServer(user.id, body);
+        const srv = await db.createServerAsync(user.id, body);
         wsBroadcast("SERVER_CREATE", { server: srv });
         sendJson(res, 201, { server: srv });
         return;
@@ -723,18 +759,7 @@ async function requestHandler(req, res) {
       if (req.method === "POST" && pathname === "/api/servers/join") {
         const body = await readJsonBody(req);
         const code = String(body.inviteCode || "").trim().toUpperCase();
-        const srv = db.state.servers.find(
-          (s) => s.inviteCode.toUpperCase() === code || code === db.state.meta.masterInviteCode.toUpperCase()
-        );
-        if (!srv) {
-          sendJson(res, 404, { error: "Código de convite de servidor não encontrado." });
-          return;
-        }
-        if (!srv.memberIds.includes(user.id)) {
-          srv.memberIds.push(user.id);
-          db.appendRealtimeEvent("SERVER_UPDATE", { server: srv });
-          db.save();
-        }
+        const srv = await db.joinServerAsync(user.id, code);
         wsBroadcast("SERVER_UPDATE", { server: srv });
         sendJson(res, 200, { server: srv });
         return;
@@ -744,7 +769,7 @@ async function requestHandler(req, res) {
       if (req.method === "POST" && createChannelMatch) {
         const serverId = createChannelMatch[1];
         const body = await readJsonBody(req);
-        const channel = db.createChannel(user.id, serverId, body);
+        const channel = await db.createChannelAsync(user.id, serverId, body);
         wsBroadcast("CHANNEL_CREATE", { serverId, channel });
         sendJson(res, 201, { channel });
         return;
@@ -760,7 +785,7 @@ async function requestHandler(req, res) {
         }
         if (req.method === "POST") {
           const body = await readJsonBody(req);
-          const message = db.createMessage(user.id, channelId, body);
+          const message = await db.createMessageAsync(user.id, channelId, body);
           wsBroadcast("MESSAGE_CREATE", { channelId, message });
           sendJson(res, 201, { message });
           return;
@@ -772,13 +797,13 @@ async function requestHandler(req, res) {
         const [, channelId, messageId] = singleMsgMatch;
         if (req.method === "PATCH") {
           const body = await readJsonBody(req);
-          const message = db.updateMessage(user.id, channelId, messageId, body);
+          const message = await db.updateMessageAsync(user.id, channelId, messageId, body);
           wsBroadcast("MESSAGE_UPDATE", { channelId, message });
           sendJson(res, 200, { message });
           return;
         }
         if (req.method === "DELETE") {
-          const result = db.deleteMessage(user.id, channelId, messageId);
+          const result = await db.deleteMessageAsync(user.id, channelId, messageId);
           wsBroadcast("MESSAGE_DELETE", result);
           sendJson(res, 200, result);
           return;
@@ -789,7 +814,7 @@ async function requestHandler(req, res) {
       if (req.method === "POST" && reactionMatch) {
         const [, channelId, messageId] = reactionMatch;
         const body = await readJsonBody(req);
-        const message = db.toggleReaction(user.id, channelId, messageId, body.emoji || "👍");
+        const message = await db.toggleReactionAsync(user.id, channelId, messageId, body.emoji || "👍");
         wsBroadcast("MESSAGE_UPDATE", { channelId, message });
         sendJson(res, 200, { message });
         return;
@@ -798,7 +823,7 @@ async function requestHandler(req, res) {
       const pinMatch = pathname.match(/^\/api\/channels\/([^/]+)\/messages\/([^/]+)\/pin$/);
       if (req.method === "POST" && pinMatch) {
         const [, channelId, messageId] = pinMatch;
-        const message = db.togglePin(user.id, channelId, messageId);
+        const message = await db.togglePinAsync(user.id, channelId, messageId);
         wsBroadcast("MESSAGE_UPDATE", { channelId, message });
         sendJson(res, 200, { message });
         return;
@@ -806,8 +831,7 @@ async function requestHandler(req, res) {
 
       if (req.method === "POST" && pathname === "/api/friends/request") {
         const body = await readJsonBody(req);
-        const friendship = db.sendFriendRequest(user.id, body.username);
-        await db.saveAsync();
+        const friendship = await db.sendFriendRequestAsync(user.id, body.username);
         wsBroadcast("FRIEND_UPDATE", { friendship, users: getPublicUsers() });
         sendJson(res, 200, { friendship });
         return;
@@ -815,7 +839,7 @@ async function requestHandler(req, res) {
 
       if (req.method === "POST" && pathname === "/api/dms/open") {
         const body = await readJsonBody(req);
-        const dm = db.getOrCreateDmChannel(user.id, body.targetUserId);
+        const dm = await db.getOrCreateDmChannelAsync(user.id, body.targetUserId);
         wsSendToUser(user.id, "DM_OPEN", { dm });
         wsSendToUser(body.targetUserId, "DM_OPEN", { dm });
         sendJson(res, 200, { dm });

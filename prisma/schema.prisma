@@ -1,0 +1,191 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// CONCORD — ESQUEMA COMPLETO DE DADOS (SUPABASE POSTGRESQL + PRISMA)
+// ============================================================================
+
+model User {
+  id           String   @id
+  username     String   @unique
+  displayName  String   @map("display_name")
+  discriminator String  @default("0000")
+  passwordHash String   @default("") @map("password_hash")
+  avatar       String   @default("")
+  bannerColor  String   @default("#5865F2") @map("banner_color")
+  status       String   @default("online")
+  customStatus String   @default("") @map("custom_status")
+  bio          String   @default("")
+  isAdmin      Boolean  @default(false) @map("is_admin")
+  isSystem     Boolean  @default(false) @map("is_system")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  memberships  ServerMember[]
+  messages     Message[]
+  voiceState   VoiceState?
+  presence     Presence?
+
+  @@map("concord_users")
+}
+
+model Server {
+  id         String   @id
+  name       String
+  icon       String   @default("")
+  ownerId    String?  @map("owner_id")
+  inviteCode String?  @unique @map("invite_code")
+  categories Json     @default("[]")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  channels   Channel[]
+  members    ServerMember[]
+  invites    Invite[]
+
+  @@map("concord_servers")
+}
+
+model Channel {
+  id         String   @id
+  serverId   String   @map("server_id")
+  categoryId String?  @map("category_id")
+  name       String
+  type       String   // "text" | "voice"
+  topic      String   @default("")
+  bitrate    Int?
+  userLimit  Int      @default(0) @map("user_limit")
+  position   Int      @default(0)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  server     Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  messages   Message[]
+  voiceStates VoiceState[]
+
+  @@map("concord_channels")
+}
+
+model ServerMember {
+  serverId String   @map("server_id")
+  userId   String   @map("user_id")
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  server   Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([serverId, userId])
+  @@map("concord_server_members")
+}
+
+model Invite {
+  code      String   @id
+  serverId  String?  @map("server_id")
+  createdBy String?  @map("created_by")
+  uses      Int      @default(0)
+  maxUses   Int      @default(0) @map("max_uses")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  server    Server?  @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@map("concord_invites")
+}
+
+model Friendship {
+  id        String   @id
+  userA     String   @map("user_a")
+  userB     String   @map("user_b")
+  status    String   @default("accepted")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userA, userB])
+  @@map("concord_friendships")
+}
+
+model DmChannel {
+  id             String   @id
+  participantIds String[] @map("participant_ids")
+  createdAt      DateTime @default(now()) @map("created_at")
+  lastMessageAt  DateTime @default(now()) @map("last_message_at")
+
+  @@map("concord_dm_channels")
+}
+
+model Message {
+  id          String    @id
+  channelId   String    @map("channel_id")
+  authorId    String?   @map("author_id")
+  content     String    @default("")
+  attachments Json      @default("[]")
+  reactions   Json      @default("{}")
+  replyToId   String?   @map("reply_to_id")
+  pinned      Boolean   @default(false)
+  editedAt    DateTime? @map("edited_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  author      User?     @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  channel     Channel?  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, createdAt(sort: Desc)])
+  @@map("concord_messages")
+}
+
+// ============================================================================
+// ESTADO TEMPORÁRIO (em chamada / fora de chamada, presença e tempo real)
+// ============================================================================
+
+model VoiceState {
+  userId        String   @id @map("user_id")
+  serverId      String?  @map("server_id")
+  channelId     String   @map("channel_id")
+  muted         Boolean  @default(false)
+  deafened      Boolean  @default(false)
+  video         Boolean  @default(false)
+  screenShare   Boolean  @default(false) @map("screen_share")
+  screenAudio   Boolean  @default(false) @map("screen_audio")
+  screenQuality String   @default("1080p60") @map("screen_quality")
+  speaking      Boolean  @default(false)
+  joinedAt      DateTime @default(now()) @map("joined_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel       Channel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId])
+  @@map("concord_voice_states")
+}
+
+model Presence {
+  userId   String   @id @map("user_id")
+  lastSeen DateTime @default(now()) @map("last_seen")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("concord_presence")
+}
+
+model Signal {
+  id           BigInt   @id @default(autoincrement())
+  targetUserId String   @map("target_user_id")
+  fromUserId   String?  @map("from_user_id")
+  payload      Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([targetUserId, id])
+  @@map("concord_signals")
+}
+
+model RealtimeEvent {
+  seq       BigInt   @id @default(autoincrement())
+  type      String
+  data      Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("concord_events")
+}

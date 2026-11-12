@@ -4,7 +4,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
-const { ConcordSupabase } = require("./supabase");
+const { ConcordSupabase, TABLES, encodeValue, inList } = require("./supabase");
+const { ConcordPrisma } = require("./prisma");
 
 function loadEnv() {
   const envPath = path.join(__dirname, "..", ".env");
@@ -69,6 +70,231 @@ function verifyPassword(password, storedHash) {
 function generateId(prefix = "") {
   const id = crypto.randomBytes(8).toString("hex");
   return prefix ? `${prefix}_${id}` : id;
+}
+
+// ---------------------------------------------------------------------------
+// Conversores de modelo: JavaScript (camelCase) <-> Supabase SQL (snake_case)
+// ---------------------------------------------------------------------------
+
+function userToDb(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    display_name: u.displayName || u.username,
+    discriminator: u.discriminator || "0000",
+    password_hash: u.passwordHash || "",
+    avatar: u.avatar || "",
+    banner_color: u.bannerColor || "#5865F2",
+    status: u.status || "online",
+    custom_status: u.customStatus || "",
+    bio: u.bio || "",
+    is_admin: !!u.isAdmin,
+    is_system: !!u.isSystem,
+    created_at: u.createdAt || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+}
+
+function dbToUser(row) {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name || row.username,
+    discriminator: row.discriminator || "0000",
+    passwordHash: row.password_hash || "",
+    avatar: row.avatar || "",
+    bannerColor: row.banner_color || "#5865F2",
+    status: row.status || "online",
+    customStatus: row.custom_status || "",
+    bio: row.bio || "",
+    isAdmin: !!row.is_admin,
+    isSystem: !!row.is_system,
+    createdAt: row.created_at || new Date().toISOString()
+  };
+}
+
+function serverToDb(s) {
+  return {
+    id: s.id,
+    name: s.name,
+    icon: s.icon || "",
+    owner_id: s.ownerId || null,
+    invite_code: s.inviteCode || null,
+    categories: s.categories || [],
+    created_at: s.createdAt || new Date().toISOString()
+  };
+}
+
+function dbToServer(row, allChannels = [], allMembers = []) {
+  const channels = allChannels.filter((c) => c.serverId === row.id);
+  const memberIds = allMembers
+    .filter((m) => m.server_id === row.id)
+    .map((m) => m.user_id);
+  return {
+    id: row.id,
+    name: row.name,
+    icon: row.icon || "",
+    ownerId: row.owner_id || "",
+    inviteCode: row.invite_code || "",
+    createdAt: row.created_at || new Date().toISOString(),
+    categories: Array.isArray(row.categories) ? row.categories : [],
+    channels,
+    memberIds: Array.from(new Set(memberIds))
+  };
+}
+
+function channelToDb(c) {
+  return {
+    id: c.id,
+    server_id: c.serverId,
+    category_id: c.categoryId || null,
+    name: c.name,
+    type: c.type === "voice" ? "voice" : "text",
+    topic: c.topic || "",
+    bitrate: typeof c.bitrate === "number" ? c.bitrate : (c.type === "voice" ? 128000 : null),
+    user_limit: typeof c.userLimit === "number" ? c.userLimit : 0,
+    position: typeof c.position === "number" ? c.position : 0,
+    created_at: c.createdAt || new Date().toISOString()
+  };
+}
+
+function dbToChannel(row) {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    categoryId: row.category_id || "",
+    name: row.name,
+    type: row.type === "voice" ? "voice" : "text",
+    topic: row.topic || "",
+    bitrate: typeof row.bitrate === "number" ? row.bitrate : (row.type === "voice" ? 128000 : undefined),
+    userLimit: row.user_limit || 0,
+    position: row.position || 0,
+    createdAt: row.created_at || new Date().toISOString()
+  };
+}
+
+function inviteToDb(inv) {
+  return {
+    code: inv.code,
+    server_id: inv.serverId || null,
+    created_by: inv.createdBy || null,
+    uses: inv.uses || 0,
+    max_uses: inv.maxUses || 0,
+    created_at: inv.createdAt || new Date().toISOString()
+  };
+}
+
+function dbToInvite(row) {
+  return {
+    code: row.code,
+    serverId: row.server_id,
+    createdBy: row.created_by,
+    uses: row.uses || 0,
+    maxUses: row.max_uses || 0,
+    createdAt: row.created_at
+  };
+}
+
+function friendshipToDb(f) {
+  return {
+    id: f.id,
+    user_a: f.userA,
+    user_b: f.userB,
+    status: f.status || "accepted",
+    created_at: f.createdAt || new Date().toISOString()
+  };
+}
+
+function dbToFriendship(row) {
+  return {
+    id: row.id,
+    userA: row.user_a,
+    userB: row.user_b,
+    status: row.status || "accepted",
+    createdAt: row.created_at
+  };
+}
+
+function dmChannelToDb(d) {
+  return {
+    id: d.id,
+    participant_ids: d.participantIds || [],
+    created_at: d.createdAt || new Date().toISOString(),
+    last_message_at: d.lastMessageAt || new Date().toISOString()
+  };
+}
+
+function dbToDmChannel(row) {
+  return {
+    id: row.id,
+    type: "dm",
+    participantIds: Array.isArray(row.participant_ids) ? row.participant_ids : [],
+    createdAt: row.created_at,
+    lastMessageAt: row.last_message_at || row.created_at
+  };
+}
+
+function messageToDb(m) {
+  return {
+    id: m.id,
+    channel_id: m.channelId,
+    author_id: m.authorId || null,
+    content: m.content || "",
+    attachments: Array.isArray(m.attachments) ? m.attachments : [],
+    reactions: m.reactions || {},
+    reply_to_id: m.replyToId || null,
+    pinned: !!m.pinned,
+    edited_at: m.editedAt || null,
+    created_at: m.createdAt || new Date().toISOString()
+  };
+}
+
+function dbToMessage(row) {
+  return {
+    id: row.id,
+    channelId: row.channel_id,
+    authorId: row.author_id,
+    content: row.content || "",
+    attachments: Array.isArray(row.attachments) ? row.attachments : [],
+    reactions: row.reactions || {},
+    replyToId: row.reply_to_id || null,
+    pinned: !!row.pinned,
+    editedAt: row.edited_at || null,
+    createdAt: row.created_at
+  };
+}
+
+function voiceStateToDb(vs) {
+  return {
+    user_id: vs.userId,
+    server_id: vs.serverId || null,
+    channel_id: vs.channelId,
+    muted: !!vs.muted,
+    deafened: !!vs.deafened,
+    video: !!vs.video,
+    screen_share: !!vs.screenShare,
+    screen_audio: !!vs.screenAudio,
+    screen_quality: vs.screenQuality || "1080p60",
+    speaking: !!vs.speaking,
+    joined_at: vs.joinedAt || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+}
+
+function dbToVoiceState(row) {
+  return {
+    userId: row.user_id,
+    serverId: row.server_id,
+    channelId: row.channel_id,
+    muted: !!row.muted,
+    deafened: !!row.deafened,
+    video: !!row.video,
+    screenShare: !!row.screen_share,
+    screenAudio: !!row.screen_audio,
+    screenQuality: row.screen_quality || "1080p60",
+    speaking: !!row.speaking,
+    joinedAt: row.joined_at
+  };
 }
 
 function createInitialState() {
@@ -249,7 +475,8 @@ function createInitialState() {
           id: "msg_geral_1",
           channelId: "chn_geral",
           authorId: systemUserId,
-          content: "Canal **#geral** pronto! Entre em **🔊 Call Geral** ou **🍿 Cinema / Tela 60fps** na barra lateral para iniciar uma chamada de voz, vídeo ou transmitir sua tela.",
+          content:
+            "Canal **#geral** pronto! Entre em **🔊 Call Geral** ou **🍿 Cinema / Tela 60fps** na barra lateral para iniciar uma chamada de voz, vídeo ou transmitir sua tela.",
           attachments: [],
           reactions: { "👍": [systemUserId] },
           replyToId: null,
@@ -259,7 +486,6 @@ function createInitialState() {
         }
       ]
     },
-    // Estruturas de sincronização em tempo real (compatível com Vercel Serverless e WebSockets)
     realtime: {
       voiceStates: {}, // userId -> state
       heartbeats: {}, // userId -> epochMs
@@ -273,32 +499,247 @@ class ConcordDatabase {
   constructor() {
     this.state = null;
     this.sqlite = null;
+    this.prisma = new ConcordPrisma();
     this.supabase = new ConcordSupabase();
     this.lastSupabaseSync = 0;
+    this.prismaReady = false;
+    this.supabaseTablesReady = false;
+    this.supabaseError = null;
     this.load();
     this.initSqliteMirror();
   }
 
+  /**
+   * Garante que os dados mais recentes estejam carregados.
+   * Prioridade 1: Prisma ORM (via DATABASE_URL com PostgreSQL do Supabase).
+   * Prioridade 2: Supabase REST API (via SUPABASE_URL + SUPABASE_KEY).
+   * Fallback 3: Espelho local SQLite / JSON.
+   */
   async ensureLoaded(force = false) {
-    if (this.supabase && this.supabase.isConfigured()) {
-      const now = Date.now();
-      if (force || now - this.lastSupabaseSync > 1200) {
-        const cloudState = await this.supabase.loadState();
-        if (cloudState && Array.isArray(cloudState.users)) {
-          const localRealtime = this.state && this.state.realtime;
-          this.state = cloudState;
-          if (localRealtime && !process.env.VERCEL) {
-            this.state.realtime = { ...cloudState.realtime, ...localRealtime };
-          }
+    const now = Date.now();
+    if (!force && now - this.lastSupabaseSync < 1500) return;
+
+    // 1. Tenta carregar via Prisma ORM se estiver configurado
+    if (this.prisma && this.prisma.isConfigured()) {
+      try {
+        const [cloudUsers, cloudServers, cloudInvites, cloudFriendships, cloudDmChannels, cloudVoiceStates] =
+          await Promise.all([
+            this.prisma.listUsers(),
+            this.prisma.listServers(),
+            this.prisma.listInvites(),
+            this.prisma.listFriendships(),
+            this.prisma.listDmChannels(),
+            this.prisma.listVoiceStates()
+          ]);
+
+        this.prismaReady = true;
+
+        if (!cloudUsers || cloudUsers.length === 0) {
+          await this.seedPrismaFromLocalState();
           this.lastSupabaseSync = now;
-        } else if (!this.state || !Array.isArray(this.state.users)) {
-          this.load();
-          if (this.state) {
-            await this.supabase.saveState(this.state);
-            this.lastSupabaseSync = now;
+          return;
+        }
+
+        this.state.users = cloudUsers.map((u) => ({
+          id: u.id,
+          username: u.username,
+          displayName: u.displayName,
+          discriminator: u.discriminator,
+          passwordHash: u.passwordHash,
+          avatar: u.avatar,
+          bannerColor: u.bannerColor,
+          status: u.status,
+          customStatus: u.customStatus,
+          bio: u.bio,
+          isAdmin: u.isAdmin,
+          isSystem: u.isSystem,
+          createdAt: u.createdAt instanceof Date ? u.createdAt.toISOString() : u.createdAt
+        }));
+
+        this.state.servers = cloudServers;
+        this.state.invites = cloudInvites.map((i) => ({
+          code: i.code,
+          serverId: i.serverId,
+          createdBy: i.createdBy,
+          uses: i.uses,
+          maxUses: i.maxUses,
+          createdAt: i.createdAt instanceof Date ? i.createdAt.toISOString() : i.createdAt
+        }));
+        this.state.friendships = cloudFriendships;
+        this.state.dmChannels = cloudDmChannels;
+
+        if (!this.state.realtime) {
+          this.state.realtime = { voiceStates: {}, heartbeats: {}, signalQueues: {}, events: [] };
+        }
+        this.state.realtime.voiceStates = {};
+        for (const vs of cloudVoiceStates) {
+          this.state.realtime.voiceStates[vs.userId] = vs;
+        }
+
+        this.lastSupabaseSync = now;
+        this.saveLocalMirror();
+        return;
+      } catch (err) {
+        console.warn("[Prisma] Aviso ao carregar dados pelo Prisma:", err.message);
+      }
+    }
+
+    if (!this.supabase || !this.supabase.isConfigured()) return;
+
+    try {
+      // 2. Tenta buscar todas as tabelas do Supabase via REST
+      const [
+        cloudUsers,
+        cloudServers,
+        cloudChannels,
+        cloudMembers,
+        cloudInvites,
+        cloudFriendships,
+        cloudDmChannels,
+        cloudVoiceStates
+      ] = await Promise.all([
+        this.supabase.select(TABLES.users, "select=*"),
+        this.supabase.select(TABLES.servers, "select=*"),
+        this.supabase.select(TABLES.channels, "select=*&order=position.asc"),
+        this.supabase.select(TABLES.members, "select=*"),
+        this.supabase.select(TABLES.invites, "select=*"),
+        this.supabase.select(TABLES.friendships, "select=*"),
+        this.supabase.select(TABLES.dmChannels, "select=*"),
+        this.supabase.select(TABLES.voiceStates, "select=*")
+      ]);
+
+      this.supabaseTablesReady = true;
+      this.supabaseError = null;
+
+      // 2. Se as tabelas existirem mas estiverem vazias, faz seed inicial
+      if (!Array.isArray(cloudUsers) || cloudUsers.length === 0) {
+        await this.seedSupabaseFromLocalState();
+        this.lastSupabaseSync = now;
+        return;
+      }
+
+      // 3. Monta o estado em memória a partir dos registros do Supabase
+      const channelsList = Array.isArray(cloudChannels) ? cloudChannels.map(dbToChannel) : [];
+      const membersList = Array.isArray(cloudMembers) ? cloudMembers : [];
+
+      this.state.users = cloudUsers.map(dbToUser);
+      this.state.servers = (cloudServers || []).map((s) => dbToServer(s, channelsList, membersList));
+      this.state.invites = Array.isArray(cloudInvites) ? cloudInvites.map(dbToInvite) : [];
+      this.state.friendships = Array.isArray(cloudFriendships) ? cloudFriendships.map(dbToFriendship) : [];
+      this.state.dmChannels = Array.isArray(cloudDmChannels) ? cloudDmChannels.map(dbToDmChannel) : [];
+
+      // 4. Carrega estado temporário das chamadas de voz do Supabase
+      if (!this.state.realtime) {
+        this.state.realtime = { voiceStates: {}, heartbeats: {}, signalQueues: {}, events: [] };
+      }
+      this.state.realtime.voiceStates = {};
+      if (Array.isArray(cloudVoiceStates)) {
+        for (const vsRow of cloudVoiceStates) {
+          const vs = dbToVoiceState(vsRow);
+          this.state.realtime.voiceStates[vs.userId] = vs;
+        }
+      }
+
+      this.lastSupabaseSync = now;
+      this.saveLocalMirror();
+    } catch (err) {
+      this.supabaseError = err.message;
+      // Caso as novas tabelas ainda não existam no Supabase, tenta carregar do estado monolítico legado
+      if (err.isMissingSchema && err.isMissingSchema()) {
+        const legacy = await this.supabase.loadState().catch(() => null);
+        if (legacy && Array.isArray(legacy.users)) {
+          this.state = legacy;
+          this.lastSupabaseSync = now;
+        }
+      }
+    }
+  }
+
+  /**
+   * Semeia o banco de dados via Prisma a partir do estado local
+   */
+  async seedPrismaFromLocalState() {
+    const s = this.state || createInitialState();
+    try {
+      for (const u of s.users || []) {
+        await this.prisma.createUser(u);
+      }
+      for (const srv of s.servers || []) {
+        const inv = (s.invites || []).find((i) => i.serverId === srv.id);
+        await this.prisma.createServer(srv, srv.channels || [], srv.memberIds || [], inv);
+      }
+      if (s.messages) {
+        for (const chMsgs of Object.values(s.messages)) {
+          if (Array.isArray(chMsgs)) {
+            for (const m of chMsgs) {
+              await this.prisma.createMessage(m);
+            }
           }
         }
       }
+    } catch (e) {
+      console.warn("[Prisma] Aviso ao semear estado inicial no Prisma:", e.message);
+    }
+  }
+
+  /**
+   * Faz o seed ou migração inicial das tabelas do Supabase usando o estado inicial ou o JSON local
+   */
+  async seedSupabaseFromLocalState() {
+    const s = this.state || createInitialState();
+    try {
+      // 1. Usuários
+      const userRows = (s.users || []).map(userToDb);
+      if (userRows.length > 0) {
+        await this.supabase.insert(TABLES.users, userRows, { onConflict: "id", mode: "merge" });
+      }
+
+      // 2. Servidores
+      const serverRows = (s.servers || []).map(serverToDb);
+      if (serverRows.length > 0) {
+        await this.supabase.insert(TABLES.servers, serverRows, { onConflict: "id", mode: "merge" });
+      }
+
+      // 3. Canais
+      const channelRows = [];
+      const memberRows = [];
+      for (const srv of s.servers || []) {
+        for (const ch of srv.channels || []) {
+          channelRows.push(channelToDb(ch));
+        }
+        for (const uid of srv.memberIds || []) {
+          memberRows.push({ server_id: srv.id, user_id: uid });
+        }
+      }
+      if (channelRows.length > 0) {
+        await this.supabase.insert(TABLES.channels, channelRows, { onConflict: "id", mode: "merge" });
+      }
+      if (memberRows.length > 0) {
+        await this.supabase.insert(TABLES.members, memberRows, { mode: "ignore" });
+      }
+
+      // 4. Convites
+      const inviteRows = (s.invites || []).map(inviteToDb);
+      if (inviteRows.length > 0) {
+        await this.supabase.insert(TABLES.invites, inviteRows, { onConflict: "code", mode: "merge" });
+      }
+
+      // 5. Mensagens iniciais
+      const messageRows = [];
+      if (s.messages) {
+        for (const chMsgs of Object.values(s.messages)) {
+          if (Array.isArray(chMsgs)) {
+            for (const m of chMsgs) {
+              messageRows.push(messageToDb(m));
+            }
+          }
+        }
+      }
+      if (messageRows.length > 0) {
+        await this.supabase.insert(TABLES.messages, messageRows, { onConflict: "id", mode: "merge" });
+      }
+    } catch (e) {
+      console.warn("[Supabase] Aviso ao semear estado inicial no Supabase:", e.message);
     }
   }
 
@@ -315,36 +756,23 @@ class ConcordDatabase {
             events: []
           };
         }
-        // Purga estados de voz, heartbeats e filas em tempo real de sessões anteriores
         this.state.realtime.voiceStates = {};
         this.state.realtime.heartbeats = {};
         this.state.realtime.signalQueues = {};
         this.state.realtime.events = [];
+        if (!this.state.meta) {
+          this.state.meta = { version: "1.0.0", masterInviteCode: "CONCORD-AMIGOS-2026", eventSeq: 1 };
+        }
         if (!this.state.meta.eventSeq) {
           this.state.meta.eventSeq = 1;
         }
-
-        // Remove canais duplicados criados por suítes de teste anteriores
-        for (const srv of this.state.servers || []) {
-          if (Array.isArray(srv.channels)) {
-            const seen = new Set();
-            srv.channels = srv.channels.filter((c) => {
-              const key = `${c.type}:${c.name}`;
-              if (seen.has(key) && c.name === "Transmissões 4K") {
-                return false;
-              }
-              seen.add(key);
-              return true;
-            });
-          }
-        }
-      } catch (err) {
+      } catch (_) {
         this.state = createInitialState();
-        this.save();
+        this.saveLocalMirror();
       }
     } else {
       this.state = createInitialState();
-      this.save();
+      this.saveLocalMirror();
     }
   }
 
@@ -378,7 +806,7 @@ class ConcordDatabase {
     } catch (_) {}
   }
 
-  save() {
+  saveLocalMirror() {
     try {
       fs.writeFileSync(DB_JSON_PATH, JSON.stringify(this.state, null, 2), "utf8");
       this.syncToSqlite();
@@ -393,18 +821,20 @@ class ConcordDatabase {
         this.syncToSqlite();
       } catch (_) {}
     }
+  }
 
-    if (this.supabase && this.supabase.isConfigured()) {
-      this.supabase.saveState(this.state).catch((err) => {
-        console.warn("[Supabase] Aviso ao persistir estado em background:", err.message);
-      });
+  save() {
+    this.saveLocalMirror();
+    // Fallback legado de backup em JSON se tabelas dedicadas não estiverem prontas
+    if (this.supabase && this.supabase.isConfigured() && !this.supabaseTablesReady) {
+      this.supabase.saveState(this.state).catch(() => {});
     }
   }
 
   async saveAsync() {
-    this.save();
-    if (this.supabase && this.supabase.isConfigured()) {
-      await this.supabase.saveState(this.state);
+    this.saveLocalMirror();
+    if (this.supabase && this.supabase.isConfigured() && !this.supabaseTablesReady) {
+      await this.supabase.saveState(this.state).catch(() => {});
     }
   }
 
@@ -419,6 +849,12 @@ class ConcordDatabase {
     if (this.state.realtime.events.length > 250) {
       this.state.realtime.events = this.state.realtime.events.slice(-250);
     }
+
+    // Salva no Supabase para que todas as instâncias da Vercel recebam via /api/sync
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.insert(TABLES.events, { type, data, created_at: new Date().toISOString() }).catch(() => {});
+    }
+
     return evt;
   }
 
@@ -426,13 +862,24 @@ class ConcordDatabase {
     if (!this.state.realtime.signalQueues[targetUserId]) {
       this.state.realtime.signalQueues[targetUserId] = [];
     }
-    this.state.realtime.signalQueues[targetUserId].push({
+    const sig = {
       ...signalPayload,
       ts: Date.now()
-    });
+    };
+    this.state.realtime.signalQueues[targetUserId].push(sig);
     if (this.state.realtime.signalQueues[targetUserId].length > 100) {
       this.state.realtime.signalQueues[targetUserId] =
         this.state.realtime.signalQueues[targetUserId].slice(-100);
+    }
+
+    // Persiste sinal WebRTC no Supabase para roteamento entre nós serverless
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.insert(TABLES.signals, {
+        target_user_id: targetUserId,
+        from_user_id: signalPayload.fromUserId || null,
+        payload: sig,
+        created_at: new Date().toISOString()
+      }).catch(() => {});
     }
   }
 
@@ -445,14 +892,32 @@ class ConcordDatabase {
   }
 
   touchHeartbeat(userId) {
+    if (!this.state.realtime) {
+      this.state.realtime = { voiceStates: {}, heartbeats: {}, signalQueues: {}, events: [] };
+    }
     this.state.realtime.heartbeats[userId] = Date.now();
-    // Expira estados de voz de usuários que caíram há mais de 35 segundos sem heartbeat
+
+    // Atualiza presença no Prisma ou Supabase
+    if (this.prisma && this.prisma.isConfigured()) {
+      this.prisma.touchPresence(userId).catch(() => {});
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase
+        .insert(
+          TABLES.presence,
+          { user_id: userId, last_seen: new Date().toISOString() },
+          { onConflict: "user_id", mode: "merge" }
+        )
+        .catch(() => {});
+    }
+
+    // Expira chamadas de voz de usuários que caíram há mais de 35s sem heartbeat
     const cutoff = Date.now() - 35000;
     let changedVoice = false;
     for (const [uid, vs] of Object.entries(this.state.realtime.voiceStates)) {
       const lastSeen = this.state.realtime.heartbeats[uid] || 0;
       if (lastSeen > 0 && lastSeen < cutoff) {
         delete this.state.realtime.voiceStates[uid];
+        this.removeVoiceState(uid);
         changedVoice = true;
       }
     }
@@ -510,6 +975,10 @@ class ConcordDatabase {
     return found;
   }
 
+  // ---------------------------------------------------------------------------
+  // CONTAS DE USUÁRIO (persistidas em concord_users no Supabase)
+  // ---------------------------------------------------------------------------
+
   registerUser({ username, displayName, password, inviteCode, avatar }) {
     const rawName = String(username || displayName || "").trim();
     const cleanUsername = rawName
@@ -539,8 +1008,6 @@ class ConcordDatabase {
 
     const palette = ["#5865F2", "#57F287", "#FEE75C", "#EB459E", "#ED4245", "#00B0F4", "#9B59B6"];
     const bannerColor = palette[realUsersCount % palette.length];
-
-    // O nome de exibição é igual ao nome de usuário
     const finalDisplayName = String(displayName || rawName || cleanUsername).trim();
 
     const newUser = {
@@ -562,15 +1029,20 @@ class ConcordDatabase {
     this.state.users.push(newUser);
     this.touchHeartbeat(newUser.id);
 
+    // Adiciona automaticamente aos servidores padrão
+    const memberRowsToInsert = [];
     for (const srv of this.state.servers) {
       if (!srv.memberIds.includes(newUser.id)) {
         srv.memberIds.push(newUser.id);
+        memberRowsToInsert.push({ server_id: srv.id, user_id: newUser.id });
       }
       if (isFirstHumanUser && srv.ownerId === "usr_concord_bot") {
         srv.ownerId = newUser.id;
       }
     }
 
+    // Cria amizades com outros membros
+    const friendshipRowsToInsert = [];
     for (const existing of this.state.users) {
       if (!existing.isSystem && existing.id !== newUser.id) {
         const existsFriendship = this.state.friendships.some(
@@ -579,23 +1051,76 @@ class ConcordDatabase {
             (f.userA === newUser.id && f.userB === existing.id)
         );
         if (!existsFriendship) {
-          this.state.friendships.push({
+          const frd = {
             id: generateId("frd"),
             userA: existing.id,
             userB: newUser.id,
             status: "accepted",
             createdAt: new Date().toISOString()
-          });
+          };
+          this.state.friendships.push(frd);
+          friendshipRowsToInsert.push(friendshipToDb(frd));
         }
       }
     }
 
-    const storedInvite = this.state.invites.find((i) => i.code.toUpperCase() === String(inviteCode).trim().toUpperCase());
+    const storedInvite = this.state.invites.find(
+      (i) => i.code.toUpperCase() === String(inviteCode).trim().toUpperCase()
+    );
     if (storedInvite) storedInvite.uses = (storedInvite.uses || 0) + 1;
 
     const token = this.createSession(newUser.id);
     this.save();
+
+    // Persiste no Prisma ou no Supabase em background
+    if (this.prisma && this.prisma.isConfigured()) {
+      this.prisma.createUser(newUser).then(() => {
+        for (const s of this.state.servers) {
+          this.prisma.joinServer(s.id, newUser.id).catch(() => {});
+        }
+        for (const f of friendshipRowsToInsert) {
+          this.prisma.createFriendship(f).catch(() => {});
+        }
+        if (storedInvite) {
+          this.prisma.incrementInvite(storedInvite.code).catch(() => {});
+        }
+      }).catch((err) => {
+        console.warn("[Prisma] Aviso ao registrar conta no Prisma:", err.message);
+      });
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      Promise.all([
+        this.supabase.insert(TABLES.users, userToDb(newUser), { onConflict: "id", mode: "merge" }),
+        memberRowsToInsert.length > 0
+          ? this.supabase.insert(TABLES.members, memberRowsToInsert, { mode: "ignore" })
+          : Promise.resolve(),
+        friendshipRowsToInsert.length > 0
+          ? this.supabase.insert(TABLES.friendships, friendshipRowsToInsert, { mode: "ignore" })
+          : Promise.resolve(),
+        storedInvite
+          ? this.supabase.update(TABLES.invites, `code=eq.${encodeValue(storedInvite.code)}`, {
+              uses: storedInvite.uses
+            })
+          : Promise.resolve()
+      ]).catch((err) => {
+        console.warn("[Supabase] Aviso ao registrar conta no banco em nuvem:", err.message);
+      });
+    }
+
     return { user: this.sanitizeUser(newUser), token };
+  }
+
+  async registerUserAsync(payload) {
+    const result = this.registerUser(payload);
+    if (this.prisma && this.prisma.isConfigured()) {
+      const u = this.findUserById(result.user.id);
+      if (u) await this.prisma.createUser(u).catch(() => {});
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      const u = this.findUserById(result.user.id);
+      if (u) {
+        await this.supabase.insert(TABLES.users, userToDb(u), { onConflict: "id", mode: "merge" }).catch(() => {});
+      }
+    }
+    return result;
   }
 
   loginUser({ username, password }) {
@@ -610,6 +1135,24 @@ class ConcordDatabase {
     const token = this.createSession(user.id);
     this.save();
     return { user: this.sanitizeUser(user), token };
+  }
+
+  async loginUserAsync(payload) {
+    let user = this.findUserByUsername(payload.username);
+    // Se não achou na memória (ex: nova lambda Vercel), tenta buscar direto no Supabase
+    if (!user && this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      try {
+        const rows = await this.supabase.select(
+          TABLES.users,
+          `username=eq.${encodeValue(String(payload.username).toLowerCase().trim())}`
+        );
+        if (Array.isArray(rows) && rows.length > 0) {
+          user = dbToUser(rows[0]);
+          this.state.users.push(user);
+        }
+      } catch (_) {}
+    }
+    return this.loginUser(payload);
   }
 
   getSecretKey() {
@@ -676,21 +1219,17 @@ class ConcordDatabase {
     const clean = String(token).replace(/^Bearer\s+/i, "").trim();
     if (!clean) return null;
 
-    // 1. Tenta recuperar sessão existente em memória
     const session = this.state.sessions && this.state.sessions[clean];
     if (session) {
       const u = this.findUserById(session.userId);
       if (u) return u;
     }
 
-    // 2. Se a sessão não está em memória (ex: reinício do servidor ou Lambda Serverless Vercel), valida o token assinado
     const payload = this.verifyToken(clean);
     if (!payload || !payload.id) return null;
 
-    // 3. Procura o usuário pelo ID
     let user = this.findUserById(payload.id);
     if (!user && payload.u) {
-      // Re-hidrata o usuário na memória do container caso tenha sido criado em outro nó serverless
       user = {
         id: payload.id,
         username: payload.u,
@@ -730,36 +1269,65 @@ class ConcordDatabase {
   updateUserProfile(userId, updates) {
     const user = this.findUserById(userId);
     if (!user) throw new Error("Usuário não encontrado.");
+    const patch = {};
     if (typeof updates.displayName === "string" && updates.displayName.trim()) {
       user.displayName = updates.displayName.trim().slice(0, 40);
+      patch.display_name = user.displayName;
     }
     if (typeof updates.customStatus === "string") {
       user.customStatus = updates.customStatus.trim().slice(0, 80);
+      patch.custom_status = user.customStatus;
     }
     if (typeof updates.bio === "string") {
       user.bio = updates.bio.trim().slice(0, 240);
+      patch.bio = user.bio;
     }
     if (typeof updates.status === "string" && ["online", "idle", "dnd", "offline"].includes(updates.status)) {
       user.status = updates.status;
+      patch.status = user.status;
     }
     if (typeof updates.avatar === "string") {
       user.avatar = updates.avatar;
+      patch.avatar = user.avatar;
     }
     if (typeof updates.bannerColor === "string") {
       user.bannerColor = updates.bannerColor;
+      patch.banner_color = user.bannerColor;
     }
+    patch.updated_at = new Date().toISOString();
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.update(TABLES.users, `id=eq.${encodeValue(userId)}`, patch).catch(() => {});
+    }
+
     return this.sanitizeUser(user);
   }
+
+  async updateUserProfileAsync(userId, updates) {
+    const user = this.updateUserProfile(userId, updates);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      const dbRow = userToDb(this.findUserById(userId));
+      await this.supabase.update(TABLES.users, `id=eq.${encodeValue(userId)}`, dbRow).catch(() => {});
+    }
+    return user;
+  }
+
+  // ---------------------------------------------------------------------------
+  // SERVIDORES E CANAIS (persistidos em concord_servers e concord_channels)
+  // ---------------------------------------------------------------------------
 
   createServer(ownerId, { name, icon }) {
     const cleanName = String(name || "").trim();
     if (!cleanName) throw new Error("Informe o nome do servidor.");
     const serverId = generateId("srv");
-    const inviteCode = cleanName
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, "")
-      .slice(0, 6) + "-" + crypto.randomBytes(2).toString("hex").toUpperCase();
+    const inviteCode =
+      cleanName
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "")
+        .slice(0, 6) +
+      "-" +
+      crypto.randomBytes(2).toString("hex").toUpperCase();
 
     const allHumanIds = this.state.users.filter((u) => !u.isSystem).map((u) => u.id);
     const memberIds = Array.from(new Set(["usr_concord_bot", ownerId, ...allHumanIds]));
@@ -781,42 +1349,100 @@ class ConcordDatabase {
 
     const textChannelId = generateId("chn");
     const voiceChannelId = generateId("chn");
-    server.channels.push(
-      {
-        id: textChannelId,
-        serverId,
-        categoryId: server.categories[0].id,
-        name: "geral",
-        type: "text",
-        topic: `Canal principal de ${cleanName}`,
-        position: 0
-      },
-      {
-        id: voiceChannelId,
-        serverId,
-        categoryId: server.categories[1].id,
-        name: "Call Geral",
-        type: "voice",
-        topic: "Canal de voz, vídeo e compartilhamento de tela",
-        bitrate: 128000,
-        userLimit: 0,
-        position: 0
-      }
-    );
+    const textChannel = {
+      id: textChannelId,
+      serverId,
+      categoryId: server.categories[0].id,
+      name: "geral",
+      type: "text",
+      topic: `Canal principal de ${cleanName}`,
+      position: 0
+    };
+    const voiceChannel = {
+      id: voiceChannelId,
+      serverId,
+      categoryId: server.categories[1].id,
+      name: "Call Geral",
+      type: "voice",
+      topic: "Canal de voz, vídeo e compartilhamento de tela",
+      bitrate: 128000,
+      userLimit: 0,
+      position: 0
+    };
 
+    server.channels.push(textChannel, voiceChannel);
     this.state.servers.push(server);
-    this.state.invites.push({
+
+    const invite = {
       code: inviteCode,
       serverId,
       createdBy: ownerId,
       createdAt: new Date().toISOString(),
       uses: 0,
       maxUses: 0
-    });
+    };
+    this.state.invites.push(invite);
     this.state.messages[textChannelId] = [];
+
     this.appendRealtimeEvent("SERVER_CREATE", { server });
     this.save();
+
+    // Persiste servidor, canais, membros e convite no Supabase
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      Promise.all([
+        this.supabase.insert(TABLES.servers, serverToDb(server)),
+        this.supabase.insert(TABLES.channels, [channelToDb(textChannel), channelToDb(voiceChannel)]),
+        this.supabase.insert(
+          TABLES.members,
+          memberIds.map((uid) => ({ server_id: serverId, user_id: uid })),
+          { mode: "ignore" }
+        ),
+        this.supabase.insert(TABLES.invites, inviteToDb(invite))
+      ]).catch((err) => {
+        console.warn("[Supabase] Aviso ao cadastrar servidor no Supabase:", err.message);
+      });
+    }
+
     return server;
+  }
+
+  async createServerAsync(ownerId, data) {
+    const srv = this.createServer(ownerId, data);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await Promise.all([
+        this.supabase.insert(TABLES.servers, serverToDb(srv), { mode: "merge" }),
+        this.supabase.insert(TABLES.channels, srv.channels.map(channelToDb), { mode: "merge" })
+      ]).catch(() => {});
+    }
+    return srv;
+  }
+
+  joinServer(userId, code) {
+    const clean = String(code || "").trim().toUpperCase();
+    const srv = this.state.servers.find(
+      (s) => s.inviteCode.toUpperCase() === clean || clean === this.state.meta.masterInviteCode.toUpperCase()
+    );
+    if (!srv) {
+      throw new Error("Código de convite de servidor não encontrado.");
+    }
+    if (!srv.memberIds.includes(userId)) {
+      srv.memberIds.push(userId);
+      this.appendRealtimeEvent("SERVER_UPDATE", { server: srv });
+      this.save();
+
+      if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+        this.supabase.insert(TABLES.members, { server_id: srv.id, user_id: userId }, { mode: "ignore" }).catch(() => {});
+      }
+    }
+    return srv;
+  }
+
+  async joinServerAsync(userId, code) {
+    const srv = this.joinServer(userId, code);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase.insert(TABLES.members, { server_id: srv.id, user_id: userId }, { mode: "ignore" }).catch(() => {});
+    }
+    return srv;
   }
 
   createChannel(userId, serverId, { name, type, categoryId, topic }) {
@@ -856,7 +1482,22 @@ class ConcordDatabase {
     }
     this.appendRealtimeEvent("CHANNEL_CREATE", { serverId, channel });
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.insert(TABLES.channels, channelToDb(channel)).catch((err) => {
+        console.warn("[Supabase] Aviso ao criar canal no Supabase:", err.message);
+      });
+    }
+
     return channel;
+  }
+
+  async createChannelAsync(userId, serverId, data) {
+    const ch = this.createChannel(userId, serverId, data);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase.insert(TABLES.channels, channelToDb(ch)).catch(() => {});
+    }
+    return ch;
   }
 
   getOrCreateDmChannel(userA, userB) {
@@ -877,9 +1518,25 @@ class ConcordDatabase {
       this.state.messages[dm.id] = [];
       this.appendRealtimeEvent("DM_OPEN", { dm });
       this.save();
+
+      if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+        this.supabase.insert(TABLES.dmChannels, dmChannelToDb(dm)).catch(() => {});
+      }
     }
     return dm;
   }
+
+  async getOrCreateDmChannelAsync(userA, userB) {
+    const dm = this.getOrCreateDmChannel(userA, userB);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase.insert(TABLES.dmChannels, dmChannelToDb(dm), { onConflict: "id", mode: "merge" }).catch(() => {});
+    }
+    return dm;
+  }
+
+  // ---------------------------------------------------------------------------
+  // MENSAGENS DO CHAT (persistidas em concord_messages)
+  // ---------------------------------------------------------------------------
 
   getMessages(channelId, limit = 100) {
     const list = this.state.messages[channelId] || [];
@@ -913,6 +1570,26 @@ class ConcordDatabase {
 
     this.appendRealtimeEvent("MESSAGE_CREATE", { channelId, message: msg });
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.insert(TABLES.messages, messageToDb(msg)).catch((err) => {
+        console.warn("[Supabase] Aviso ao cadastrar mensagem no Supabase:", err.message);
+      });
+      if (dm) {
+        this.supabase
+          .update(TABLES.dmChannels, `id=eq.${encodeValue(dm.id)}`, { last_message_at: msg.createdAt })
+          .catch(() => {});
+      }
+    }
+
+    return msg;
+  }
+
+  async createMessageAsync(authorId, channelId, data) {
+    const msg = this.createMessage(authorId, channelId, data);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase.insert(TABLES.messages, messageToDb(msg)).catch(() => {});
+    }
     return msg;
   }
 
@@ -928,6 +1605,29 @@ class ConcordDatabase {
     msg.editedAt = new Date().toISOString();
     this.appendRealtimeEvent("MESSAGE_UPDATE", { channelId, message: msg });
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase
+        .update(TABLES.messages, `id=eq.${encodeValue(messageId)}`, {
+          content: msg.content,
+          edited_at: msg.editedAt
+        })
+        .catch(() => {});
+    }
+
+    return msg;
+  }
+
+  async updateMessageAsync(userId, channelId, messageId, data) {
+    const msg = this.updateMessage(userId, channelId, messageId, data);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase
+        .update(TABLES.messages, `id=eq.${encodeValue(messageId)}`, {
+          content: msg.content,
+          edited_at: msg.editedAt
+        })
+        .catch(() => {});
+    }
     return msg;
   }
 
@@ -944,7 +1644,20 @@ class ConcordDatabase {
     const payload = { id: messageId, channelId };
     this.appendRealtimeEvent("MESSAGE_DELETE", payload);
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.remove(TABLES.messages, `id=eq.${encodeValue(messageId)}`).catch(() => {});
+    }
+
     return payload;
+  }
+
+  async deleteMessageAsync(userId, channelId, messageId) {
+    const res = this.deleteMessage(userId, channelId, messageId);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase.remove(TABLES.messages, `id=eq.${encodeValue(messageId)}`).catch(() => {});
+    }
+    return res;
   }
 
   toggleReaction(userId, channelId, messageId, emoji) {
@@ -964,6 +1677,23 @@ class ConcordDatabase {
     }
     this.appendRealtimeEvent("MESSAGE_UPDATE", { channelId, message: msg });
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase
+        .update(TABLES.messages, `id=eq.${encodeValue(messageId)}`, { reactions: msg.reactions })
+        .catch(() => {});
+    }
+
+    return msg;
+  }
+
+  async toggleReactionAsync(userId, channelId, messageId, emoji) {
+    const msg = this.toggleReaction(userId, channelId, messageId, emoji);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase
+        .update(TABLES.messages, `id=eq.${encodeValue(messageId)}`, { reactions: msg.reactions })
+        .catch(() => {});
+    }
     return msg;
   }
 
@@ -974,6 +1704,23 @@ class ConcordDatabase {
     msg.pinned = !msg.pinned;
     this.appendRealtimeEvent("MESSAGE_UPDATE", { channelId, message: msg });
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase
+        .update(TABLES.messages, `id=eq.${encodeValue(messageId)}`, { pinned: msg.pinned })
+        .catch(() => {});
+    }
+
+    return msg;
+  }
+
+  async togglePinAsync(userId, channelId, messageId) {
+    const msg = this.togglePin(userId, channelId, messageId);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase
+        .update(TABLES.messages, `id=eq.${encodeValue(messageId)}`, { pinned: msg.pinned })
+        .catch(() => {});
+    }
     return msg;
   }
 
@@ -1003,7 +1750,114 @@ class ConcordDatabase {
       this.state.friendships.push(rel);
     }
     this.save();
+
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.insert(TABLES.friendships, friendshipToDb(rel), { onConflict: "id", mode: "merge" }).catch(() => {});
+    }
+
     return rel;
+  }
+
+  async sendFriendRequestAsync(fromUserId, targetUsername) {
+    const rel = this.sendFriendRequest(fromUserId, targetUsername);
+    if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase.insert(TABLES.friendships, friendshipToDb(rel), { onConflict: "id", mode: "merge" }).catch(() => {});
+    }
+    return rel;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ESTADO TEMPORÁRIO DO USUÁRIO (em chamada / fora de chamada, presença)
+  // ---------------------------------------------------------------------------
+
+  setVoiceState(userId, state) {
+    if (!this.state.realtime) {
+      this.state.realtime = { voiceStates: {}, heartbeats: {}, signalQueues: {}, events: [] };
+    }
+    this.state.realtime.voiceStates[userId] = state;
+    this.touchHeartbeat(userId);
+
+    // Salva no Prisma ou no Supabase para que qualquer outra instância / Vercel saiba que ele está em chamada
+    if (this.prisma && this.prisma.isConfigured()) {
+      this.prisma.setVoiceState(state).catch((err) => {
+        console.warn("[Prisma] Aviso ao persistir estado de chamada no Prisma:", err.message);
+      });
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase
+        .insert(TABLES.voiceStates, voiceStateToDb(state), { onConflict: "user_id", mode: "merge" })
+        .catch((err) => {
+          console.warn("[Supabase] Aviso ao persistir estado de chamada no Supabase:", err.message);
+        });
+    }
+  }
+
+  async setVoiceStateAsync(userId, state) {
+    this.setVoiceState(userId, state);
+    if (this.prisma && this.prisma.isConfigured()) {
+      await this.prisma.setVoiceState(state).catch(() => {});
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase
+        .insert(TABLES.voiceStates, voiceStateToDb(state), { onConflict: "user_id", mode: "merge" })
+        .catch(() => {});
+    }
+  }
+
+  updateVoiceState(userId, updates) {
+    if (!this.state.realtime || !this.state.realtime.voiceStates[userId]) return;
+    const current = this.state.realtime.voiceStates[userId];
+    const patch = {};
+
+    if (typeof updates.muted === "boolean") { current.muted = updates.muted; patch.muted = updates.muted; }
+    if (typeof updates.deafened === "boolean") { current.deafened = updates.deafened; patch.deafened = updates.deafened; }
+    if (typeof updates.video === "boolean") { current.video = updates.video; patch.video = updates.video; }
+    if (typeof updates.screenShare === "boolean") { current.screenShare = updates.screenShare; patch.screen_share = updates.screenShare; }
+    if (typeof updates.screenAudio === "boolean") { current.screenAudio = updates.screenAudio; patch.screen_audio = updates.screenAudio; }
+    if (typeof updates.screenQuality === "string") { current.screenQuality = updates.screenQuality; patch.screen_quality = updates.screenQuality; }
+    if (typeof updates.speaking === "boolean") { current.speaking = updates.speaking; patch.speaking = updates.speaking; }
+    patch.updated_at = new Date().toISOString();
+
+    if (this.prisma && this.prisma.isConfigured()) {
+      this.prisma.updateVoiceState(userId, updates).catch(() => {});
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.update(TABLES.voiceStates, `user_id=eq.${encodeValue(userId)}`, patch).catch(() => {});
+    }
+  }
+
+  async updateVoiceStateAsync(userId, updates) {
+    this.updateVoiceState(userId, updates);
+    if (this.prisma && this.prisma.isConfigured()) {
+      await this.prisma.updateVoiceState(userId, updates).catch(() => {});
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      const current = this.state.realtime && this.state.realtime.voiceStates[userId];
+      if (current) {
+        await this.supabase
+          .update(TABLES.voiceStates, `user_id=eq.${encodeValue(userId)}`, voiceStateToDb(current))
+          .catch(() => {});
+      }
+    }
+  }
+
+  removeVoiceState(userId) {
+    if (!this.state.realtime) return;
+    delete this.state.realtime.voiceStates[userId];
+
+    // Remove do Prisma ou Supabase indicando que o usuário saiu de chamada
+    if (this.prisma && this.prisma.isConfigured()) {
+      this.prisma.removeVoiceState(userId).catch(() => {});
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      this.supabase.remove(TABLES.voiceStates, `user_id=eq.${encodeValue(userId)}`).catch((err) => {
+        console.warn("[Supabase] Aviso ao remover estado de chamada no Supabase:", err.message);
+      });
+    }
+  }
+
+  async removeVoiceStateAsync(userId) {
+    this.removeVoiceState(userId);
+    if (this.prisma && this.prisma.isConfigured()) {
+      await this.prisma.removeVoiceState(userId).catch(() => {});
+    } else if (this.supabase && this.supabase.isConfigured() && this.supabaseTablesReady) {
+      await this.supabase.remove(TABLES.voiceStates, `user_id=eq.${encodeValue(userId)}`).catch(() => {});
+    }
   }
 }
 

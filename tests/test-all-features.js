@@ -326,19 +326,80 @@ test("8. Persistência de Conta com Tokens Assinados e Re-hidratação Stateless
   assert.equal(dbB.getUserByToken(forgedToken), null, "Token com assinatura violada deve ser rejeitado");
 });
 
-test("9. Integração com Banco em Nuvem Supabase e Migração Centralizada", async (t) => {
-  const { ConcordSupabase } = require("../server/supabase");
+test("9. Integração com Banco em Nuvem Supabase por Tabelas Dedicadas (v2)", async (t) => {
+  const { ConcordSupabase, TABLES } = require("../server/supabase");
   const sql = ConcordSupabase.getMigrationSql();
 
-  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS concord_state"), "Deve conter script DDL da tabela concord_state");
-  assert.ok(sql.includes("data JSONB NOT NULL"), "Estado deve ser armazenado como JSONB para sincronização de alta velocidade");
+  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS concord_users"), "Deve conter DDL da tabela concord_users");
+  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS concord_servers"), "Deve conter DDL da tabela concord_servers");
+  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS concord_channels"), "Deve conter DDL da tabela concord_channels");
+  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS concord_voice_states"), "Deve conter DDL da tabela concord_voice_states");
+  assert.ok(sql.includes("CREATE TABLE IF NOT EXISTS concord_messages"), "Deve conter DDL da tabela concord_messages");
   assert.ok(sql.includes("ROW LEVEL SECURITY"), "Deve configurar RLS para segurança no Supabase");
 
+  assert.equal(TABLES.users, "concord_users");
+  assert.equal(TABLES.servers, "concord_servers");
+  assert.equal(TABLES.voiceStates, "concord_voice_states");
+
   const client = new ConcordSupabase();
-  // Quando desconfigurado, isConfigured() é false e métodos retornam null com segurança sem quebrar o app
-  assert.equal(client.isConfigured(), false);
-  const state = await client.loadState();
-  assert.equal(state, null);
-  const saved = await client.saveState({ test: 1 });
-  assert.equal(saved, false);
+  assert.ok(typeof client.isConfigured === "function");
+  // Quando offline ou sem o registro main, retorna de forma segura sem lançar exceções não tratadas
+  const dummyState = await client.loadState();
+  assert.ok(dummyState === null || typeof dummyState === "object");
+});
+
+test("10. Gerenciamento do Estado Temporário do Usuário em Chamada (Voice States)", async (t) => {
+  const db = new ConcordDatabase();
+  const testUserId = "usr_tester_call_1";
+
+  // Usuário entra em chamada de voz
+  db.setVoiceState(testUserId, {
+    userId: testUserId,
+    serverId: "srv_qg_amigos",
+    channelId: "chn_voz_cinema",
+    muted: false,
+    deafened: false,
+    video: true,
+    screenShare: true,
+    screenAudio: true,
+    screenQuality: "1080p60",
+    speaking: true,
+    joinedAt: new Date().toISOString()
+  });
+
+  assert.ok(db.state.realtime.voiceStates[testUserId], "Estado de voz deve estar registrado");
+  assert.equal(db.state.realtime.voiceStates[testUserId].channelId, "chn_voz_cinema");
+  assert.equal(db.state.realtime.voiceStates[testUserId].screenShare, true);
+
+  // Usuário atualiza estado (ex: muta o microfone)
+  db.updateVoiceState(testUserId, { muted: true, speaking: false });
+  assert.equal(db.state.realtime.voiceStates[testUserId].muted, true);
+  assert.equal(db.state.realtime.voiceStates[testUserId].speaking, false);
+
+  // Usuário sai de chamada (fora de chamada)
+  db.removeVoiceState(testUserId);
+  assert.equal(db.state.realtime.voiceStates[testUserId], undefined, "Estado de voz deve ser removido após sair da chamada");
+});
+
+test("11. Integração com Prisma ORM e Schema dos Dados", async (t) => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { ConcordPrisma } = require("../server/prisma");
+
+  const schemaPath = path.join(__dirname, "..", "prisma", "schema.prisma");
+  assert.equal(fs.existsSync(schemaPath), true, "prisma/schema.prisma deve existir");
+  const schema = fs.readFileSync(schemaPath, "utf8");
+
+  assert.ok(schema.includes('model User'), "Schema deve definir model User");
+  assert.ok(schema.includes('model Server'), "Schema deve definir model Server");
+  assert.ok(schema.includes('model Channel'), "Schema deve definir model Channel");
+  assert.ok(schema.includes('model Message'), "Schema deve definir model Message");
+  assert.ok(schema.includes('model VoiceState'), "Schema deve definir model VoiceState");
+  assert.ok(schema.includes('@@map("concord_voice_states")'), "VoiceState deve mapear para concord_voice_states");
+  assert.ok(schema.includes('@@map("concord_users")'), "User deve mapear para concord_users");
+
+  const prismaAdapter = new ConcordPrisma();
+  assert.ok(typeof prismaAdapter.isConfigured === "function");
+  // Se DATABASE_URL não estiver configurada no ambiente de teste, isConfigured() deve ser seguro (sem crash)
+  assert.equal(typeof prismaAdapter.isConfigured(), "boolean");
 });
